@@ -1,0 +1,219 @@
+/* Custom overrides for product card sizing */
+
+/* Desktop default */
+.product-item .product-img {
+  height: 140px; /* shorter thumbnail */
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1; /* square to avoid tall look */
+}
+
+.product-item .product-img img {
+  max-height: 100%;
+  width: auto; /* keep aspect ratio */
+  object-fit: contain;
+}
+
+/* Tighter text sizing inside product-card */
+.product-item .card-body h6 {
+  font-size: 12.5px; /* smaller */
+  line-height: 1.3;
+}
+.product-item .card-body .d-flex h6 {
+  font-size: 12.5px; /* smaller */
+}
+
+/* Smaller buttons in footer */
+.product-item .card-footer .btn.btn-sm {
+  font-size: 11px;
+}
+
+/* Reduce card bottom spacing */
+.card.product-item {
+  margin-bottom: 1rem; /* was mb-4 ~ 1.5rem in bootstrap spacing */
+}
+
+/* Tablet */
+@media (max-width: 992px) {
+  .product-item .product-img { height: 120px; }
+}
+
+/* Mobile */
+@media (max-width: 576px) {
+  .product-item .product-img { height: 110px; }
+}
+
+/* Smaller rating and spacing */
+.rating-stars i {
+  font-size: 12px;
+}
+.card.product-item .card-body .text-muted {
+  font-size: 12px;
+}
+
+/* Clamp product title to 2 lines */
+.product-item .product-title {
+  display: -webkit-box;
+  line-clamp: 1; /* 1 line to keep card short */
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 20px; /* tighter title block */
+}
+
+/* Tighten default paddings to reduce vertical height */
+.card.product-item .card-body {
+  padding-top: 8px !important;
+  padding-bottom: 6px !important;
+}
+.card.product-item .card-footer {
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+}
+
+/* Keep price in a single line across components */
+.price-text { white-space: nowrap; }
+
+/* Softer hover effect on card */
+.card.product-item {
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.card.product-item:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+}
+
+/* Reduce default image hover scale from base theme */
+.product-item:hover .product-img img {
+  transform: scale(1.05);
+}
+
+/* Badge (e.g., New, -20%) */
+.product-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: #ff4757;
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  z-index: 2;
+}
+.product-badge.badge-new { background: #2ed573; }
+.product-badge.badge-sale { background: #ff4757; }
+
+/* Skeleton loading */
+.skeleton-card {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding-bottom: 12px;
+}
+.skeleton-thumb {
+  height: 180px;
+  background: linear-gradient(90deg, #eee 25%, #f5f5f5 37%, #eee 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+  border-radius: 4px;
+}
+.skeleton-line {
+  height: 12px;
+  margin-top: 12px;
+  background: linear-gradient(90deg, #eee 25%, #f5f5f5 37%, #eee 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+  border-radius: 3px;
+}
+@keyframes shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* Flash Sale Section */
+.flash-sale {
+  padding: 16px 12px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #ffe5e1 0%, #ffd6d1 100%);
+  margin-top: 16px;
+}
+.flash-sale__header {
+  margin-bottom: 12px;
+}
+.flash-sale__title {
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+.flash-sale__title span { color: #ff3b30; }
+.flash-sale__countdown span {
+  display: inline-block;
+  min-width: 28px;
+  padding: 4px 6px;
+  margin: 0 2px;
+  text-align: center;
+  background: #1f2937;
+  color: #fff;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.flash-sale__viewall { color: #b91c1c; font-weight: 600; }
+
+.flash-sale__scroller {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 6px 4px 4px;
+  scroll-snap-type: x mandatory;
+}
+.flash-sale__scroller::-webkit-scrollbar { height: 8px; }
+.flash-sale__scroller::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
+
+.flash-card {
+  flex: 0 0 200px; /* was 180px: make card a bit wider */
+  background: #fff;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 8px;
+  scroll-snap-align: start;
+}
+.flash-card__thumb {
+  width: 100%;
+  height: 200px; /* was 180px */
+  display: block;
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+}
+.flash-card__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* ensure image not too tall */
+}
+.flash-card__body { padding-top: 8px; }
+.flash-card__name {
+  font-size: 13px;
+  line-height: 1.3;
+  height: 32px; /* two small lines area */
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.flash-card__price {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.flash-card__price strong { color: #d32f2f; font-size: 15px; white-space: nowrap; }
+.flash-card__old { color: #9ca3af; text-decoration: line-through; font-size: 12px; white-space: nowrap; display: inline-block; }
+.flash-card__discount { background: #ef4444; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; }
+
+.flash-card__sold { position: relative; margin-top: 6px; }
+.flash-card__sold .track { height: 8px; background: #fde2e2; border-radius: 999px; overflow: hidden; }
+.flash-card__sold .fill { height: 100%; background: linear-gradient(90deg, #fca5a5 0%, #ef4444 70%); }
+.flash-card__sold small { color: #6b7280; font-size: 12px; }
