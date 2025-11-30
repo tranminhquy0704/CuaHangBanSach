@@ -1,6 +1,23 @@
 (function(){
   window.AdminViews = window.AdminViews || {};
-  function fmtVND(n){ return (Number(n)||0).toLocaleString('vi-VN')+' ₫'; }
+  function normalizeVND(val){
+    if (val == null) return 0;
+    const raw = String(val).trim();
+    if (!raw) return 0;
+    const normalized = raw.replace(/[^0-9,.-]/g, '');
+    if (normalized) {
+      const parsed = parseFloat(normalized.replace(',', '.'));
+      if (!Number.isNaN(parsed)) {
+        return parsed >= 1000 ? Math.round(parsed) : Math.round(parsed * 1000);
+      }
+    }
+    const digits = raw.replace(/[^\d]/g,'');
+    if (!digits) return 0;
+    let num = parseInt(digits,10);
+    if (num <= 999) num = num * 1000;
+    return num;
+  }
+  function fmtVND(n){ return normalizeVND(n).toLocaleString('vi-VN')+' ₫'; }
   window.AdminViews['inventory'] = async function(container){
     const token = localStorage.getItem('token');
     container.innerHTML = `
@@ -12,18 +29,26 @@
         </div>
         <div class="card-body">
           <table class="table table-striped table-bordered mb-0">
-            <thead><tr><th>#</th><th>Tên</th><th>Danh mục</th><th>Giá</th><th>Tồn hiện tại</th><th style="width:260px">Điều chỉnh</th></tr></thead>
+            <thead><tr><th>#</th><th>Tên</th><th>Thể loại</th><th>Giá</th><th>Tồn hiện tại</th><th style="width:260px">Điều chỉnh</th></tr></thead>
             <tbody id="inv-tbody"><tr><td colspan="6">Loading...</td></tr></tbody>
           </table>
         </div>
       </div>`;
     let list = [];
+    let categories = [];
     const tbody = container.querySelector('#inv-tbody');
     const search = container.querySelector('#inv-search');
     try{
-      const res = await fetch('/admin/products', { headers:{ 'Authorization':'Bearer '+token }});
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      list = await res.json();
+      const [prodRes, catRes] = await Promise.all([
+        fetch('/admin/products', { headers:{ 'Authorization':'Bearer '+token }}),
+        fetch('/admin/categories', { headers:{ 'Authorization':'Bearer '+token }})
+      ]);
+      if(!prodRes.ok) throw new Error('HTTP '+prodRes.status);
+      if(!catRes.ok) throw new Error('HTTP '+catRes.status);
+      list = await prodRes.json();
+      categories = await catRes.json();
+      const catMap = Object.fromEntries((categories||[]).map(c=>[c.id, c.name]));
+      list = list.map(p => ({ ...p, category_name: p.category_name || catMap[p.category_id] || '' }));
       function controls(p){
         return `
           <div class="d-flex align-items-center gap-2">
@@ -38,7 +63,7 @@
         const q = (search.value||'').toLowerCase();
         const rows = list.filter(p=>!q || (p.name||'').toLowerCase().includes(q));
         tbody.innerHTML = rows.map((p,i)=>`<tr>
-          <td>${i+1}</td><td>${p.name||''}</td><td>${p.category_name||''}</td><td>${fmtVND(p.price)}</td><td><span data-role="stock" data-id="${p.id}">${p.stock||0}</span></td><td>${controls(p)}</td>
+          <td>${i+1}</td><td>${p.name||''}</td><td>${p.category_name||'Chưa gán'}</td><td>${fmtVND(p.price)}</td><td><span data-role="stock" data-id="${p.id}">${p.stock||0}</span></td><td>${controls(p)}</td>
         </tr>`).join('')||'<tr><td colspan="6">No data</td></tr>';
       }
       async function patch(id, body){

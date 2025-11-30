@@ -13,10 +13,13 @@
       ${buildItem('#/customers', 'fas fa-users', 'Khách hàng')}
       ${buildItem('#/orders', 'fas fa-shopping-cart', 'Đơn hàng')}
       ${buildItem('#/revenue', 'fas fa-dollar-sign', 'Doanh thu')}
-      ${buildItem('#/categories', 'fas fa-tags', 'Danh mục')}
+      ${buildItem('#/categories', 'fas fa-tags', 'Thể loại')}
       ${buildItem('#/publishers', 'fas fa-building', 'NXB / Tác giả')}
       ${buildItem('#/inventory', 'fas fa-warehouse', 'Kho hàng')}
+      ${buildItem('#/flashsale', 'fas fa-bolt', 'Flash Sale')}
+      ${buildItem('#/discount', 'fas fa-percent', 'Giảm giá')}
       <div class="sb-sidenav-menu-heading">HỆ THỐNG</div>
+      ${buildItem('#/contacts', 'fas fa-envelope', 'Liên hệ')}
       ${buildItem('#/settings', 'fas fa-cog', 'Cài đặt')}
       ${buildItem('#/roles', 'fas fa-shield-alt', 'Phân quyền')}
     `;

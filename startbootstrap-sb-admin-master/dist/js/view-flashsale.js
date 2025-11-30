@@ -1,0 +1,156 @@
+(function(){
+  window.AdminViews = window.AdminViews || {};
+  function normalizeVND(val){
+    if (val == null) return 0;
+    const raw = String(val).trim();
+    if (!raw) return 0;
+    const normalized = raw.replace(/[^0-9,.-]/g, '');
+    if (normalized) {
+      const parsed = parseFloat(normalized.replace(',', '.'));
+      if (!Number.isNaN(parsed)) {
+        return parsed >= 1000 ? Math.round(parsed) : Math.round(parsed * 1000);
+      }
+    }
+    const digits = raw.replace(/[^\d]/g, '');
+    if (!digits) return 0;
+    let num = parseInt(digits, 10);
+    if (num <= 999) num = num * 1000;
+    return num;
+  }
+  function fmtVND(n){ return normalizeVND(n).toLocaleString('vi-VN')+' ₫'; }
+  
+  window.AdminViews['flashsale'] = async function(container){
+    const token = localStorage.getItem('token');
+    container.innerHTML = `
+      <h1 class="mt-4">Quản Lý Flash Sale</h1>
+      <div class="card mb-4">
+        <div class="card-header d-flex flex-wrap gap-2 align-items-center">
+          <span><i class="fas fa-bolt me-1"></i> Danh sách sản phẩm</span>
+          <div class="ms-auto d-flex gap-2 flex-wrap">
+            <select id="fs-category" class="form-select form-select-sm" style="max-width:200px">
+              <option value="">Tất cả thể loại</option>
+            </select>
+            <input id="fs-search" class="form-control form-control-sm" style="max-width:240px" placeholder="Tìm kiếm sản phẩm..."/>
+          </div>
+        </div>
+        <div class="card-body">
+          <table class="table table-striped table-bordered mb-0">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Hình ảnh</th>
+                <th>Tên sản phẩm</th>
+                <th>Giá</th>
+                <th>Giảm giá</th>
+                <th style="width:120px">Flash Sale</th>
+              </tr>
+            </thead>
+            <tbody id="fs-tbody"><tr><td colspan="6">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>`;
+    
+    try{
+      const [productsRes, categoriesRes] = await Promise.all([
+        fetch('/admin/products', { headers: { 'Authorization': 'Bearer '+token } }),
+        fetch('/admin/categories', { headers: { 'Authorization': 'Bearer '+token } })
+      ]);
+      
+      const productsData = await productsRes.json();
+      const categoriesData = await categoriesRes.json();
+      
+      let list = Array.isArray(productsData)?productsData:[];
+      let categories = Array.isArray(categoriesData)?categoriesData:[];
+      const tbody = container.querySelector('#fs-tbody');
+      const search = container.querySelector('#fs-search');
+      const categorySelect = container.querySelector('#fs-category');
+      
+      // Populate category dropdown
+      categorySelect.innerHTML = '<option value="">Tất cả thể loại</option>' + 
+        categories.map(cat => `<option value="${cat.id}">${cat.name||''}</option>`).join('');
+      
+      function render(){
+        const q = (search.value||'').toLowerCase();
+        const catId = categorySelect.value ? Number(categorySelect.value) : null;
+        const rows = list.filter(p => {
+          const hay = (p.name||'').toLowerCase();
+          const matchSearch = !q || hay.includes(q);
+          const matchCategory = !catId || (p.category_id && Number(p.category_id) === catId);
+          return matchSearch && matchCategory;
+        });
+        
+        tbody.innerHTML = rows.map(p => {
+          const isFlashSale = p.is_flashsale === 1 || p.is_flashsale === true;
+          const category = categories.find(c => c.id === p.category_id);
+          const categoryName = category ? category.name : 'Chưa phân loại';
+          const price = normalizeVND(p.price||0);
+          return `
+            <tr>
+              <td>${p.id}</td>
+              <td>
+                <img src="${p.img||''}" alt="${p.name||''}" 
+                     style="width:50px;height:50px;object-fit:cover;border-radius:4px;" 
+                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'50\\' height=\\'50\\'%3E%3Crect fill=\\'%23ddd\\' width=\\'50\\' height=\\'50\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\' dy=\\'.3em\\' fill=\\'%23999\\'%3ENo img%3C/text%3E%3C/svg%3E'"/>
+              </td>
+              <td>
+                <div class="fw-semibold">${p.name||''}</div>
+                <small class="text-muted">${categoryName}</small>
+              </td>
+              <td>${fmtVND(price)}</td>
+              <td>${p.discount ? p.discount + '%' : '-'}</td>
+              <td>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" 
+                         data-id="${p.id}" 
+                         ${isFlashSale ? 'checked' : ''}
+                         style="cursor:pointer;">
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('') || '<tr><td colspan="6">Không có sản phẩm nào</td></tr>';
+      }
+      
+      search.addEventListener('input', render);
+      categorySelect.addEventListener('change', render);
+      
+      tbody.addEventListener('change', async (e)=>{
+        const checkbox = e.target;
+        if(!checkbox.classList.contains('form-check-input')) return;
+        const id = Number(checkbox.getAttribute('data-id'));
+        const isChecked = checkbox.checked;
+        const product = list.find(p => p.id === id);
+        if(!product) return;
+        
+        try{
+          const res = await fetch(`/admin/products/${id}`, {
+            method: 'PUT',
+            headers: {
+              'Authorization': 'Bearer '+token,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              ...product,
+              is_flashsale: isChecked
+            })
+          });
+          
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          
+          // Update local state
+          const item = list.find(x => x.id === id);
+          if(item) item.is_flashsale = isChecked ? 1 : 0;
+        }catch(e){
+          alert('Có lỗi xảy ra khi cập nhật Flash Sale: ' + (e.message||'Unknown error'));
+          checkbox.checked = !isChecked; // Revert
+        }
+      });
+      
+      render();
+    }catch(e){
+      container.querySelector('#fs-tbody').innerHTML = 
+        '<tr><td colspan="6">Lỗi: ' + (e.message||'Không thể tải dữ liệu') + '</td></tr>';
+    }
+  }
+})();
+

@@ -3,12 +3,12 @@
   window.AdminViews['categories'] = async function(container){
     const token = localStorage.getItem('token');
     container.innerHTML = `
-      <h1 class="mt-4">Danh mục</h1>
+      <h1 class="mt-4">Thể loại</h1>
       <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center gap-2">
-          <span><i class="fas fa-tags me-1"></i> Quản lý danh mục</span>
+          <span><i class="fas fa-tags me-1"></i> Quản lý thể loại</span>
           <div class="d-flex gap-2">
-            <input id="c-search" class="form-control form-control-sm" style="max-width:240px" placeholder="Tìm danh mục..."/>
+            <input id="c-search" class="form-control form-control-sm" style="max-width:240px" placeholder="Tìm thể loại..."/>
             <button id="c-add" class="btn btn-sm btn-primary"><i class="fas fa-plus"></i> Thêm</button>
           </div>
         </div>
@@ -23,7 +23,7 @@
       <div class="modal fade" id="catModal" tabindex="-1">
         <div class="modal-dialog">
           <div class="modal-content">
-            <div class="modal-header"><h5 class="modal-title">Danh mục</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+            <div class="modal-header"><h5 class="modal-title">Thể loại</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
             <div class="modal-body">
               <div class="mb-2"><label class="form-label">Tên</label><input id="cat-name" class="form-control"/></div>
               <div class="mb-2"><label class="form-label">Mô tả</label><textarea id="cat-desc" class="form-control" rows="3"></textarea></div>
@@ -79,7 +79,7 @@
     }
 
     async function remove(id){
-      if(!confirm('Xóa danh mục này?')) return;
+      if(!confirm('Xóa thể loại này?')) return;
       const res = await fetch('/admin/categories/'+id, { method:'DELETE', headers:{ 'Authorization':'Bearer '+token } });
       if(!res.ok) throw new Error('HTTP '+res.status);
       await load();

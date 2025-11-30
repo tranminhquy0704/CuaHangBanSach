@@ -7,7 +7,7 @@
   let weekly;
   let favorite;
   let topCust;
-  let ordersDT;
+  let recentOrdersChart;
 
   async function fetchJSON(url){ const r = await fetch(url, { headers }); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
   
@@ -35,32 +35,57 @@
     });
   }
 
-  async function loadFavorites(){
+  function renderOrders(labels, data){
+    const ctx = document.getElementById('recentOrdersChart');
+    if(!ctx || typeof Chart === 'undefined') return;
+    if(recentOrdersChart) recentOrdersChart.destroy();
+    recentOrdersChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'Đơn hàng', lineTension: 0.3, backgroundColor: 'rgba(25,135,84,0.15)', borderColor: 'rgba(25,135,84,1)', data }] },
+      options: { 
+        responsive: true, 
+        maintainAspectRatio: false, 
+        scales: { 
+          xAxes: [{ gridLines:{ display:false } }], 
+          yAxes: [{ ticks: { beginAtZero: true, precision: 0 } }] 
+        }, 
+        tooltips: { callbacks: { label: function(tooltipItem){ const v = Number(tooltipItem.yLabel)||0; return 'Đơn hàng: '+v.toLocaleString('vi-VN'); } } } 
+      }
+    });
+  }
+
+  // Thể loại được yêu thích nhất (top 5 thể loại theo doanh thu)
+  async function loadFavorites(days){
     try{
       const ctx = document.getElementById('favoriteChart');
       if(!ctx || typeof Chart === 'undefined') return;
-      const res = await fetchJSON('/admin/products');
-      const rows = Array.isArray(res)? res.slice(): [];
-      rows.sort((a,b)=> Number(b.rating||0) - Number(a.rating||0));
-      const top = rows.slice(0, 7);
-      const labels = top.map(x=>{
-        const name = x.name || x.product_name || ('SP '+x.id);
-        return String(name).length>28? (String(name).slice(0,28)+'…') : String(name);
-      });
-      const values = top.map(x=> Number(x.rating||0));
+      const url = days && Number(days) > 0 ? '/admin/charts/revenue-by-category?days='+days : '/admin/charts/revenue-by-category';
+      const res = await fetchJSON(url);
+      const labels = Array.isArray(res.labels) ? res.labels : [];
+      const data = Array.isArray(res.data) ? res.data : [];
       if(favorite) favorite.destroy();
       favorite = new Chart(ctx, {
         type: 'horizontalBar',
-        data: { labels, datasets: [{ label: 'Đánh giá', backgroundColor: '#0d6efd', borderColor: '#0d6efd', data: values }] },
+        data: { 
+          labels,
+          datasets: [{
+            label: 'Doanh thu theo thể loại',
+            backgroundColor: '#0d6efd',
+            borderColor: '#0d6efd',
+            data
+          }]
+        },
         options: {
           responsive: true,
           maintainAspectRatio: false,
           legend: { display: false },
           scales: {
-            xAxes: [{ ticks: { beginAtZero: true, suggestedMax: 5, stepSize: 1 } }],
+            xAxes: [{
+              ticks: { beginAtZero: true, callback: v => (Number(v)||0).toLocaleString('vi-VN') + ' ₫' }
+            }],
             yAxes: [{ ticks: { mirror: false } }]
           },
-          tooltips: { callbacks: { label: function(t){ const v=Number(t.xLabel)||0; return 'Đánh giá: '+v.toFixed(1)+'★'; } } }
+          tooltips: { callbacks: { label: function(t){ const v=Number(t.xLabel)||0; return v.toLocaleString('vi-VN')+' ₫'; } } }
         }
       });
     }catch(_){ }
@@ -82,45 +107,46 @@
     }catch(_){ }
   }
 
-  async function loadCategoryPie(){
+  // Thể loại được bán chạy nhất (top 5 thể loại theo doanh thu - biểu đồ cột)
+  async function loadCategoryPie(days){
     try{
-      const res = await fetchJSON('/admin/top/best-sellers');
+      const url = days && Number(days) > 0 ? '/admin/charts/revenue-by-category?days='+days : '/admin/charts/revenue-by-category';
+      const res = await fetchJSON(url);
       const ctx = document.getElementById('revenueCategoryPie');
       if(!ctx || typeof Chart === 'undefined') return;
       if(pie) pie.destroy();
-      const baseColors = ['#4c6ef5','#12b886','#fa5252','#fab005','#845ef7','#20c997','#fd7e14','#339af0','#e64980','#82c91e'];
-      const rows = Array.isArray(res)? res.slice(): [];
-      rows.sort((a,b)=> (Number(b.sold||b.quantity||0)) - (Number(a.sold||a.quantity||0)));
-      const top = rows.slice(0,5);
-      const rest = rows.slice(5);
-      const restSum = rest.reduce((s,x)=> s + Number(x.sold||x.quantity||0), 0);
-      const labelsRaw = top.map(x=> x.name||x.product_name||('SP '+x.id));
-      const valuesRaw = top.map(x=> Number(x.sold||x.quantity||0));
-      if(rest.length>0){ labelsRaw.push('Khác'); valuesRaw.push(restSum); }
-      const labels = labelsRaw.map(s=>{ s=String(s||''); return s.length>24? (s.slice(0,24)+'…') : s; });
-      const values = valuesRaw;
-      const total = values.reduce((a,b)=>a+b,0) || 1;
-      const colors = baseColors.slice(0, labels.length);
+      const labels = Array.isArray(res.labels) ? res.labels : [];
+      const values = Array.isArray(res.data) ? res.data : [];
+      const colors = ['#4c6ef5','#12b886','#fa5252','#fab005','#845ef7','#20c997','#fd7e14','#339af0','#e64980','#82c91e'];
       pie = new Chart(ctx, {
-        type: 'doughnut',
-        data: { labels, datasets: [{ data: values, backgroundColor: colors, borderColor: '#fff', borderWidth: 2 }] },
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Doanh thu theo thể loại',
+            data: values,
+            backgroundColor: labels.map((_,i)=> colors[i % colors.length]),
+            borderColor: '#fff',
+            borderWidth: 1
+          }]
+        },
         options: {
-          cutoutPercentage: 55,
           responsive: true,
           maintainAspectRatio: false,
-          layout: { padding: { top: 8, right: 8, bottom: 8, left: 8 } },
+          legend: { display: false },
+          scales: {
+            yAxes: [{
+              ticks: {
+                beginAtZero: true,
+                callback: v => (Number(v)||0).toLocaleString('vi-VN') + ' ₫'
+              }
+            }]
+          },
           tooltips: {
             callbacks: {
-              label: function(tooltipItem, data){
-                const idx = tooltipItem.index;
-                const val = values[idx]||0;
-                const pct = ((val/total)*100).toFixed(1)+'%';
-                const name = labels[idx]||'';
-                return name+': '+val.toLocaleString('vi-VN')+' ('+pct+')';
-              }
+              label: function(t){ const v = Number(t.yLabel)||0; return v.toLocaleString('vi-VN')+' ₫'; }
             }
-          },
-          legend: { position: 'bottom', labels: { boxWidth: 12, padding: 12, fontSize: 12, fontColor: '#495057', usePointStyle: true } }
+          }
         }
       });
     }catch(e){ /* silent */ }
@@ -154,53 +180,149 @@
     }
   }
 
+  async function loadOrders(by){
+    try{
+      const res = await fetchJSON('/admin/charts/orders?by='+(by||'month'));
+      const labels = Array.isArray(res.labels) ? res.labels : [];
+      const data = Array.isArray(res.data) ? res.data : [];
+      return renderOrders(labels, data);
+    }catch(_){ /* ignore */ }
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
     const sel = document.getElementById('revenue-by');
     if(!sel) return;
     load(sel.value || 'month');
     sel.addEventListener('change', () => load(sel.value));
-    loadCategoryPie();
+
+    const favSel = document.getElementById('category-days');
+    const bestSel = document.getElementById('category-best-days');
+
+    const reloadFavorite = () => {
+      const days = favSel ? favSel.value : '0';
+      loadFavorites(days);
+    };
+    const reloadBest = () => {
+      const days = bestSel ? bestSel.value : '0';
+      loadCategoryPie(days);
+    };
+
+    reloadFavorite();
+    reloadBest();
+
+    if (favSel) {
+      favSel.addEventListener('change', reloadFavorite);
+    }
+    if (bestSel) {
+      bestSel.addEventListener('change', reloadBest);
+    }
     loadWeekly();
-    loadFavorites();
 
-    // Highlights: Low stock
+    // Highlights: Sắp hết hàng (biểu đồ số sản phẩm sắp hết theo thể loại)
     (async function(){
       try{
-        const body = document.getElementById('lowStockBody');
-        if(!body) return;
-        const res = await fetchJSON('/admin/stats/low-stock?limit=5');
+        const chartEl = document.getElementById('lowStockChart');
+        if(!chartEl || typeof Chart === 'undefined') return;
+        const res = await fetchJSON('/admin/stats/low-stock?limit=50');
         const rows = Array.isArray(res)? res: [];
-        if(rows.length===0){ body.innerHTML = '<tr><td colspan="3" class="text-center py-3">Không có dữ liệu</td></tr>'; return; }
-        const tr = r=> `<tr><td>${(r.name||'').slice(0,30)}</td><td class="text-end">${Number(r.stock||0)}</td><td class="text-end">${Number(r.sold||0)}</td></tr>`;
-        body.innerHTML = rows.map(tr).join('');
-      }catch(_){ const body = document.getElementById('lowStockBody'); if(body) body.innerHTML = '<tr><td colspan="3" class="text-center py-3">Lỗi tải dữ liệu</td></tr>'; }
+        if(rows.length===0){
+          return;
+        }
+        // Gom theo thể loại cho biểu đồ
+        const agg = new Map();
+        rows.forEach(r => {
+          const cat = (r.category_name || 'Chưa phân loại');
+          agg.set(cat, (agg.get(cat) || 0) + 1);
+        });
+        const categoryRows = Array.from(agg.entries()).sort((a,b)=> b[1]-a[1]);
+        const labels = categoryRows.map(([name]) => name);
+        const data = categoryRows.map(([,count]) => count);
+        new Chart(chartEl, {
+          type: 'bar',
+          data: { labels, datasets: [{ label: 'Sản phẩm sắp hết', data, backgroundColor: 'rgba(255,99,132,0.7)' }] },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            legend: { display: false },
+            scales: { yAxes: [{ ticks: { beginAtZero: true, precision: 0 } }] }
+          }
+        });
+      }catch(_){
+        // ignore
+      }
     })();
 
-    // Highlights: New customers (7 days)
+    // Khách hàng mới: 12 tháng với 2 datasets (7 ngày gần & tổng tháng)
     (async function(){
       try{
-        const listEl = document.getElementById('newCustList');
-        const countEl = document.getElementById('newCustCount');
-        if(!listEl || !countEl) return;
-        const res = await fetchJSON('/admin/stats/new-customers?days=7');
+        const canvas = document.getElementById('newCustomersChart');
+        if(!canvas || typeof Chart === 'undefined') return;
+        const res = await fetchJSON('/admin/customers/list');
         const rows = Array.isArray(res)? res: [];
-        countEl.textContent = rows.length;
-        const li = r=> `<li class="list-group-item d-flex justify-content-between align-items-center"><span>${(r.name||r.email||'').slice(0,28)}</span><small class="text-muted">${new Date(r.first_order).toLocaleDateString('vi-VN')}</small></li>`;
-        listEl.innerHTML = rows.slice(0,5).map(li).join('') || '<li class="list-group-item">Không có dữ liệu</li>';
-      }catch(_){ const listEl = document.getElementById('newCustList'); if(listEl) listEl.innerHTML = '<li class="list-group-item">Lỗi tải dữ liệu</li>'; }
-    })();
-
-    // Highlights: Top customers by revenue
-    (async function(){
-      try{
-        const ctx = document.getElementById('topCustomersChart');
-        if(!ctx || typeof Chart === 'undefined') return;
-        const res = await fetchJSON('/admin/stats/top-customers?limit=5');
-        const rows = Array.isArray(res)? res: [];
-        const labels = rows.map(r=> String(r.name||r.email||'').slice(0,20)+(String(r.name||r.email||'').length>20?'…':''));
-        const vals = rows.map(r=> Number(r.revenue||0));
-        if(topCust) topCust.destroy();
-        topCust = new Chart(ctx, { type:'horizontalBar', data:{ labels, datasets:[{ label:'Doanh thu', backgroundColor:'#20c997', borderColor:'#20c997', data: vals }] }, options:{ responsive:true, maintainAspectRatio:false, legend:{display:false}, scales:{ xAxes:[{ ticks:{ beginAtZero:true, callback:(v)=> (Number(v)||0).toLocaleString('vi-VN')+' ₫' } }], yAxes:[{ ticks:{ mirror:false } }] }, tooltips:{ callbacks:{ label:(t)=> { const v=Number(t.xLabel)||0; return v.toLocaleString('vi-VN')+' ₫'; } } } } });
+        const now = new Date();
+        const currentYear = now.getFullYear();
+        
+        const norm = v => {
+          if(!v) return null;
+          const d = new Date(v);
+          return isNaN(d) ? null : d;
+        };
+        
+        // Tính ngày 7 ngày trước
+        const sevenDaysAgo = new Date(now);
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+        
+        const monthNames = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12'];
+        const monthTotal = new Array(12).fill(0); // Tổng khách mỗi tháng
+        const weekData = new Array(12).fill(0); // Khách 7 ngày gần đây của tháng hiện tại
+        
+        rows.forEach(c => {
+          const d = norm(c.created_at || c.createdAt);
+          if(!d || d.getFullYear() !== currentYear) return;
+          
+          const month = d.getMonth(); // 0-11
+          monthTotal[month] += 1;
+          
+          // Nếu trong 7 ngày gần đây
+          if(d >= sevenDaysAgo && d <= now) {
+            weekData[now.getMonth()] += 1;
+          }
+        });
+        
+        new Chart(canvas, {
+          type: 'bar',
+          data: { 
+            labels: monthNames, 
+            datasets: [
+              { 
+                label: '7 ngày gần', 
+                data: weekData, 
+                backgroundColor: 'rgba(75,192,192,0.7)',
+                borderColor: 'rgba(75,192,192,1)',
+                borderWidth: 1
+              },
+              { 
+                label: 'Tổng tháng', 
+                data: monthTotal, 
+                backgroundColor: 'rgba(54,162,235,0.7)',
+                borderColor: 'rgba(54,162,235,1)',
+                borderWidth: 1
+              }
+            ] 
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            legend: { display: true, position: 'top' },
+            scales: { 
+              yAxes: [{ ticks: { beginAtZero: true, precision: 0 } }],
+              xAxes: [{ 
+                barPercentage: 0.85,
+                categoryPercentage: 0.9
+              }]
+            }
+          }
+        });
       }catch(_){ /* ignore */ }
     })();
 
@@ -225,43 +347,13 @@
       }
     }catch(_){ /* ignore */ }
 
-    // Load Recent Orders into the template table and localize headers
-    (async function(){
-      try{
-        const table = document.getElementById('datatablesSimple');
-        if(!table) return;
-        const thead = table.querySelector('thead');
-        const tfoot = table.querySelector('tfoot');
-        const tbody = table.querySelector('tbody');
-        if(thead) thead.innerHTML = '<tr><th>Mã đơn</th><th>Khách hàng</th><th>Ngày</th><th>Tổng</th><th>Trạng thái</th></tr>';
-        if(tfoot) tfoot.innerHTML = '<tr><th>Mã đơn</th><th>Khách hàng</th><th>Ngày</th><th>Tổng</th><th>Trạng thái</th></tr>';
-        const rows = await fetchJSON('/admin/orders/recent?limit=10');
-        const fmtDate = s=>{ try{return new Date(s).toLocaleString('vi-VN');}catch(_){return s||'';} };
-        const toNumber = v=> {
-          if (typeof v === 'number') return v;
-          const num = Number(String(v||'').replace(/[^0-9.-]/g,''));
-          return isNaN(num) ? 0 : num;
-        };
-        const vnd = n=> (toNumber(n)||0).toLocaleString('vi-VN')+' ₫';
-        if(tbody){
-          tbody.innerHTML = (rows||[]).map(o=>`<tr><td>${o.id}</td><td>${o.fullName||o.customer||''}</td><td>${fmtDate(o.created_at||o.date)}</td><td>${vnd(o.total)}</td><td>${fmtStatus(o.status)}</td></tr>`).join('');
-        }
-        if(window.simpleDatatables && table){
-          try{ if(ordersDT) { ordersDT.destroy(); } }catch(_){ }
-          ordersDT = new simpleDatatables.DataTable(table, {
-            labels: {
-              placeholder: 'Tìm kiếm...',
-              perPage: '{select} mục mỗi trang',
-              perPageSelect: [5,10,25,50],
-              noRows: 'Không có dữ liệu',
-              info: 'Hiển thị {start}–{end} của {rows} mục',
-              noResults: 'Không tìm thấy kết quả',
-              infoFiltered: '(lọc từ {rowsTotal} mục)'
-            },
-            perPage: 5
-          });
-        }
-      }catch(_){ /* ignore */ }
-    })();
+    // Biểu đồ đơn hàng gần đây giống biểu đồ doanh thu (line chart + bộ lọc)
+    const ordersSel = document.getElementById('orders-by');
+    if(ordersSel){
+      loadOrders(ordersSel.value || 'month');
+      ordersSel.addEventListener('change', () => loadOrders(ordersSel.value));
+    } else {
+      loadOrders('month');
+    }
   });
 })();

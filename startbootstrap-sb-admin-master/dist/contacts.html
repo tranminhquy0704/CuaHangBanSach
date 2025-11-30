@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>Quản lý liên hệ - Admin</title>
+    <link href="https://cdn.jsdelivr.net/npm/simple-datatables@7.1.2/dist/style.min.css" rel="stylesheet" />
+    <link href="css/styles.css" rel="stylesheet" />
+    <script src="https://use.fontawesome.com/releases/v6.3.0/js/all.js" crossorigin="anonymous"></script>
+    <style>
+        .status-new { background-color: #dc3545; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .status-read { background-color: #ffc107; color: #000; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .status-replied { background-color: #28a745; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .stat-card { border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .stat-number { font-size: 32px; font-weight: bold; margin: 10px 0; }
+    </style>
+</head>
+<body class="sb-nav-fixed">
+    <nav class="sb-topnav navbar navbar-expand navbar-dark bg-dark">
+        <a class="navbar-brand ps-3" href="index.html">Book Store Admin</a>
+        <button class="btn btn-link btn-sm order-1 order-lg-0 me-4 me-lg-0" id="sidebarToggle"><i class="fas fa-bars"></i></button>
+        <ul class="navbar-nav ms-auto me-3">
+            <li class="nav-item dropdown">
+                <a class="nav-link dropdown-toggle" id="navbarDropdown" href="#" role="button" data-bs-toggle="dropdown"><i class="fas fa-user fa-fw"></i></a>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="#" onclick="logout()">Đăng xuất</a></li>
+                </ul>
+            </li>
+        </ul>
+    </nav>
+    <div id="layoutSidenav">
+        <div id="layoutSidenav_nav">
+            <nav class="sb-sidenav accordion sb-sidenav-dark" id="sidenavAccordion">
+                <div class="sb-sidenav-menu">
+                    <div class="nav">
+                        <div class="sb-sidenav-menu-heading">Tổng quan</div>
+                        <a class="nav-link" href="index.html">
+                            <div class="sb-nav-link-icon"><i class="fas fa-tachometer-alt"></i></div>
+                            Trang tổng quan
+                        </a>
+                        <div class="sb-sidenav-menu-heading">Tiện ích</div>
+                        <a class="nav-link active" href="contacts.html">
+                            <div class="sb-nav-link-icon"><i class="fas fa-envelope"></i></div>
+                            Liên hệ
+                        </a>
+                        <a class="nav-link" href="charts.html">
+                            <div class="sb-nav-link-icon"><i class="fas fa-chart-area"></i></div>
+                            Biểu đồ
+                        </a>
+                        <a class="nav-link" href="tables.html">
+                            <div class="sb-nav-link-icon"><i class="fas fa-table"></i></div>
+                            Bảng
+                        </a>
+                    </div>
+                </div>
+            </nav>
+        </div>
+        <div id="layoutSidenav_content">
+            <main>
+                <div class="container-fluid px-4">
+                    <h1 class="mt-4">Quản lý liên hệ</h1>
+                    <ol class="breadcrumb mb-4">
+                        <li class="breadcrumb-item"><a href="index.html">Dashboard</a></li>
+                        <li class="breadcrumb-item active">Liên hệ</li>
+                    </ol>
+
+                    <!-- Statistics -->
+                    <div class="row">
+                        <div class="col-xl-3 col-md-6">
+                            <div class="card bg-primary text-white stat-card">
+                                <div class="card-body">
+                                    <div>Tổng số</div>
+                                    <div class="stat-number" id="totalCount">0</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-xl-3 col-md-6">
+                            <div class="card bg-danger text-white stat-card">
+                                <div class="card-body">
+                                    <div>Tin mới</div>
+                                    <div class="stat-number" id="newCount">0</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-xl-3 col-md-6">
+                            <div class="card bg-warning text-dark stat-card">
+                                <div class="card-body">
+                                    <div>Đã đọc</div>
+                                    <div class="stat-number" id="readCount">0</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-xl-3 col-md-6">
+                            <div class="card bg-success text-white stat-card">
+                                <div class="card-body">
+                                    <div>Đã trả lời</div>
+                                    <div class="stat-number" id="repliedCount">0</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Filter buttons -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <div class="btn-group" role="group">
+                                <button type="button" class="btn btn-primary" onclick="filterContacts('')">Tất cả</button>
+                                <button type="button" class="btn btn-danger" onclick="filterContacts('new')">Mới</button>
+                                <button type="button" class="btn btn-warning" onclick="filterContacts('read')">Đã đọc</button>
+                                <button type="button" class="btn btn-success" onclick="filterContacts('replied')">Đã trả lời</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <table class="table table-striped table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Tên</th>
+                                        <th>Email</th>
+                                        <th>Tiêu đề</th>
+                                        <th>Trạng thái</th>
+                                        <th>Thời gian</th>
+                                        <th>Thao tác</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="contactsTable">
+                                    <tr>
+                                        <td colspan="7" class="text-center">Đang tải...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </main>
+            <footer class="py-4 bg-light mt-auto">
+                <div class="container-fluid px-4">
+                    <div class="d-flex align-items-center justify-content-between small">
+                        <div class="text-muted">Copyright &copy; Book Store 2025</div>
+                    </div>
+                </div>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Contact Detail Modal -->
+    <div class="modal fade" id="contactModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Chi tiết liên hệ</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="contactModalBody">
+                    <!-- Contact details will be inserted here -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-danger" id="deleteBtn">Xóa</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Đóng</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="js/scripts.js"></script>
+    <script>
+        const API_URL = 'http://localhost:5000';
+        let currentFilter = '';
+        let currentContactId = null;
+
+        // Check authentication
+        function checkAuth() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = 'login.html';
+                return false;
+            }
+            return token;
+        }
+
+        // Logout
+        function logout() {
+            localStorage.removeItem('token');
+            localStorage.removeItem('adminEmail');
+            window.location.href = 'login.html';
+        }
+
+        // Fetch contacts
+        async function fetchContacts(status = '') {
+            const token = checkAuth();
+            if (!token) return;
+
+            try {
+                const url = status ? `${API_URL}/admin/contacts?status=${status}` : `${API_URL}/admin/contacts`;
+                const response = await fetch(url, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (response.status === 401) {
+                    logout();
+                    return;
+                }
+
+                const contacts = await response.json();
+                renderContacts(contacts);
+            } catch (error) {
+                console.error('Error fetching contacts:', error);
+                document.getElementById('contactsTable').innerHTML = '<tr><td colspan="7" class="text-center text-danger">Lỗi khi tải dữ liệu</td></tr>';
+            }
+        }
+
+        // Fetch statistics
+        async function fetchStats() {
+            const token = checkAuth();
+            if (!token) return;
+
+            try {
+                const response = await fetch(`${API_URL}/admin/contacts/stats`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const stats = await response.json();
+                
+                document.getElementById('totalCount').textContent = stats.total || 0;
+                document.getElementById('newCount').textContent = stats.new_count || 0;
+                document.getElementById('readCount').textContent = stats.read_count || 0;
+                document.getElementById('repliedCount').textContent = stats.replied_count || 0;
+            } catch (error) {
+                console.error('Error fetching stats:', error);
+            }
+        }
+
+        // Render contacts table
+        function renderContacts(contacts) {
+            const tbody = document.getElementById('contactsTable');
+            
+            if (contacts.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Không có liên hệ nào</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = contacts.map((contact, index) => `
+                <tr class="${contact.status === 'new' ? 'table-warning' : ''}">
+                    <td>${index + 1}</td>
+                    <td>${escapeHtml(contact.name)}</td>
+                    <td>${escapeHtml(contact.email)}</td>
+                    <td>${escapeHtml(contact.subject)}</td>
+                    <td><span class="status-${contact.status}">${getStatusText(contact.status)}</span></td>
+                    <td>${formatDate(contact.created_at)}</td>
+                    <td>
+                        <button class="btn btn-sm btn-primary" onclick="viewContact(${contact.id})">Xem</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // View contact details
+        async function viewContact(id) {
+            const token = checkAuth();
+            if (!token) return;
+
+            currentContactId = id;
+
+            try {
+                const response = await fetch(`${API_URL}/admin/contacts`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const contacts = await response.json();
+                const contact = contacts.find(c => c.id === id);
+
+                if (!contact) {
+                    alert('Không tìm thấy liên hệ');
+                    return;
+                }
+
+                // Mark as read if new
+                if (contact.status === 'new') {
+                    await updateStatus(id, 'read');
+                    contact.status = 'read';
+                }
+
+                document.getElementById('contactModalBody').innerHTML = `
+                    <div class="row mb-3">
+                        <div class="col-md-6"><strong>Tên:</strong> ${escapeHtml(contact.name)}</div>
+                        <div class="col-md-6"><strong>Email:</strong> ${escapeHtml(contact.email)}</div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6"><strong>Trạng thái:</strong> <span class="status-${contact.status}">${getStatusText(contact.status)}</span></div>
+                        <div class="col-md-6"><strong>Thời gian:</strong> ${formatDate(contact.created_at)}</div>
+                    </div>
+                    <div class="mb-3">
+                        <strong>Tiêu đề:</strong>
+                        <p class="mt-2">${escapeHtml(contact.subject)}</p>
+                    </div>
+                    <div class="mb-3">
+                        <strong>Nội dung:</strong>
+                        <p class="mt-2 p-3 bg-light rounded">${escapeHtml(contact.message)}</p>
+                    </div>
+                    <div class="mb-3">
+                        <strong>Cập nhật trạng thái:</strong>
+                        <div class="btn-group mt-2">
+                            <button class="btn btn-sm btn-warning" onclick="updateStatus(${id}, 'read')" ${contact.status === 'read' ? 'disabled' : ''}>Đánh dấu đã đọc</button>
+                            <button class="btn btn-sm btn-success" onclick="updateStatus(${id}, 'replied')" ${contact.status === 'replied' ? 'disabled' : ''}>Đánh dấu đã trả lời</button>
+                        </div>
+                    </div>
+                `;
+
+                const modal = new bootstrap.Modal(document.getElementById('contactModal'));
+                modal.show();
+            } catch (error) {
+                console.error('Error viewing contact:', error);
+                alert('Lỗi khi xem chi tiết liên hệ');
+            }
+        }
+
+        // Update contact status
+        async function updateStatus(id, status) {
+            const token = checkAuth();
+            if (!token) return;
+
+            try {
+                const response = await fetch(`${API_URL}/admin/contacts/${id}/status`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ status })
+                });
+
+                if (response.ok) {
+                    fetchContacts(currentFilter);
+                    fetchStats();
+                    if (currentContactId === id) {
+                        viewContact(id);
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating status:', error);
+                alert('Lỗi khi cập nhật trạng thái');
+            }
+        }
+
+        // Delete contact
+        document.getElementById('deleteBtn').addEventListener('click', async function() {
+            if (!currentContactId || !confirm('Bạn có chắc chắn muốn xóa liên hệ này?')) return;
+
+            const token = checkAuth();
+            if (!token) return;
+
+            try {
+                const response = await fetch(`${API_URL}/admin/contacts/${currentContactId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (response.ok) {
+                    bootstrap.Modal.getInstance(document.getElementById('contactModal')).hide();
+                    fetchContacts(currentFilter);
+                    fetchStats();
+                }
+            } catch (error) {
+                console.error('Error deleting contact:', error);
+                alert('Lỗi khi xóa liên hệ');
+            }
+        });
+
+        // Filter contacts
+        function filterContacts(status) {
+            currentFilter = status;
+            fetchContacts(status);
+        }
+
+        // Helper functions
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            return date.toLocaleString('vi-VN');
+        }
+
+        function getStatusText(status) {
+            const texts = { new: 'Mới', read: 'Đã đọc', replied: 'Đã trả lời' };
+            return texts[status] || status;
+        }
+
+        // Initialize
+        fetchContacts();
+        fetchStats();
+    </script>
+</body>
+</html>
