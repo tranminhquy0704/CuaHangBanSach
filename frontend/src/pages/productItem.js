@@ -34,7 +34,12 @@ function ProductItem({ product, addToCart }) {
 
     // Price formatting (VN)
     const priceNumber = parseVND(product.price);
-    const priceFormatted = formatVND(priceNumber);
+    // Nếu có discount, tính giá sau khi giảm
+    const discountPercent = Number(product.discount) || 0;
+    const finalPrice = discountPercent > 0 
+        ? Math.max(0, Math.round(priceNumber * (1 - discountPercent / 100)))
+        : priceNumber;
+    const priceFormatted = formatVND(finalPrice);
 
     // Helpers for stars and sold
     const renderStars = (rating = 0) => {
@@ -68,8 +73,21 @@ function ProductItem({ product, addToCart }) {
                 </a>
                 <div className="card-body border-left border-right text-center p-0 pt-4 pb-3">
                     <h6 className="product-title mb-2"><a href={`/shopdetail/${product.id}`} className="text-dark">{product.name}</a></h6>
-                    <div className="d-flex justify-content-center">
-                        <h6>{priceFormatted}</h6>
+                    <div className="d-flex justify-content-center align-items-center" style={{gap: '8px'}}>
+                        <h6 className="text-danger mb-0">{priceFormatted}</h6>
+                        {(() => {
+                            const hasData = !!product.oldPrice || !!product.discount;
+                            const demo = !hasData && process.env.NODE_ENV !== 'production';
+                            const old = product.oldPrice
+                              ? parseVND(product.oldPrice)
+                              : (product.discount ? priceNumber : (demo ? Math.round(priceNumber / 0.8) : null));
+                            if (!old || !isFinite(old) || old <= finalPrice) return null;
+                            return (
+                                <small>
+                                    <del className="text-muted">{formatVND(old)}</del>
+                                </small>
+                            );
+                        })()}
                     </div>
                     {(displaySettings.show_rating || displaySettings.show_sold) && (
                         <div className="d-flex justify-content-center align-items-center gap-2 mt-1" style={{columnGap:'8px'}}>
@@ -83,16 +101,6 @@ function ProductItem({ product, addToCart }) {
                             )}
                         </div>
                     )}
-                </div>
-                <div className="card-footer d-flex justify-content-between bg-light border">
-                    <a href="/" className="btn btn-sm text-dark p-0"
-                        onClick={handleAddToCart}>
-                        <i className="fas fa-shopping-cart text-primary mr-1"></i>
-                        Thêm vào giỏ hàng
-                    </a>
-                    <a href={`/shopdetail/${product.id}`} className="btn btn-sm text-dark p-0">
-                        <i className="fas fa-eye text-primary mr-1"></i> Chi tiết
-                    </a>
                 </div>
             </div>
         </div>

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatVND } from '../utils/currency';
+import { formatVND, parseVND } from '../utils/currency';
 
 // Featured shelf without tabs: show top 5 products by sold
 const HomeTabbedShelf = ({ products = [], onAddToCart }) => {
@@ -9,6 +9,20 @@ const HomeTabbedShelf = ({ products = [], onAddToCart }) => {
       .sort((a, b) => (b?.sold || 0) - (a?.sold || 0))
       .slice(0, 5);
   }, [products]);
+
+  // Calculate old price from discount if needed (same logic as ShopDetail.js)
+  const getOldPrice = (product) => {
+    const priceNumber = parseVND(product.price);
+    const hasData = !!product.oldPrice || !!product.discount;
+    const demo = !hasData && process.env.NODE_ENV !== 'production';
+    
+    const old = product.oldPrice
+      ? parseVND(product.oldPrice)
+      : (product.discount ? Math.round(priceNumber / (1 - product.discount / 100)) : (demo ? Math.round(priceNumber / 0.8) : null));
+    
+    if (!old || !isFinite(old) || old <= priceNumber) return null;
+    return old;
+  };
 
   return (
     <div className="container-fluid pt-5">
@@ -30,8 +44,19 @@ const HomeTabbedShelf = ({ products = [], onAddToCart }) => {
                 <h6 className="product-title mb-2 text-truncate" title={p.name}>
                   <a href={`/shopdetail/${p.id}`} className="text-dark">{p.name}</a>
                 </h6>
-                <div className="d-flex justify-content-center">
-                  <h6 className="text-danger">{formatVND(p.price)}</h6>
+                <div className="d-flex justify-content-center align-items-center" style={{gap: '8px'}}>
+                  <h6 className="text-danger mb-0">{formatVND(p.price)}</h6>
+                  {(() => {
+                    const oldPrice = getOldPrice(p);
+                    if (oldPrice) {
+                      return (
+                        <small>
+                          <del className="text-muted">{formatVND(oldPrice)}</del>
+                        </small>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
                 <small className="text-muted">Đã bán {p.sold || 0}</small>
               </div>

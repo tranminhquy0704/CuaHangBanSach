@@ -9,6 +9,8 @@ import { CartContext } from './CartContext';
 
 function Shop() {
     const [products, setProducts] = useState([]); // State để lưu trữ danh sách sản phẩm
+    const [categories, setCategories] = useState([]); // State để lưu trữ danh sách thể loại
+    const [selectedCategory, setSelectedCategory] = useState(''); // State để lưu thể loại được chọn
     const [loading, setLoading] = useState(true);
     const [displaySettings, setDisplaySettings] = useState({
         products_per_page: 12,
@@ -17,6 +19,7 @@ function Shop() {
     });
     const [currentPage, setCurrentPage] = useState(1);
     const [paginatedProducts, setPaginatedProducts] = useState([]);
+    const [sortOption, setSortOption] = useState('newest'); // Sắp xếp: newest | best | price_asc | price_desc
     const navigate = useNavigate(); // Hook để điều hướng
     const location = useLocation(); // Hook để lấy query string từ URL
     const { addToCart: contextAddToCart } = useContext(CartContext);
@@ -79,6 +82,17 @@ function Shop() {
             });
     }, []);
 
+    // Fetch categories
+    useEffect(() => {
+        axios.get('/api/categories')
+            .then(response => {
+                setCategories(response.data || []);
+            })
+            .catch(error => {
+                console.error('Error fetching categories:', error);
+            });
+    }, []);
+
     // Lấy danh sách sản phẩm từ server khi component được tải hoặc khi search query thay đổi
     useEffect(() => {
         // Lấy query string search từ URL
@@ -107,12 +121,41 @@ function Shop() {
             });
     }, [location.search]); // Chạy lại khi query string thay đổi
 
-    // Pagination logic
+    // Pagination + sort + filter logic
     useEffect(() => {
+        // Filter by category first
+        let filtered = [...products];
+        if (selectedCategory) {
+            filtered = filtered.filter(p => p.category_id && Number(p.category_id) === Number(selectedCategory));
+        }
+
+        // Copy ra mảng mới để sort không làm thay đổi state gốc
+        let sorted = [...filtered];
+
+        // Sắp xếp theo option
+        sorted.sort((a, b) => {
+            const priceA = parseVND(a.price);
+            const priceB = parseVND(b.price);
+            const soldA = Number(a.sold) || 0;
+            const soldB = Number(b.sold) || 0;
+
+            switch (sortOption) {
+                case 'best': // Bán chạy (tạm dùng tổng sold)
+                    return soldB - soldA;
+                case 'price_asc': // Giá tăng dần
+                    return priceA - priceB;
+                case 'price_desc': // Giá giảm dần
+                    return priceB - priceA;
+                case 'newest': // Mới nhất (id lớn hơn mới hơn)
+                default:
+                    return (Number(b.id) || 0) - (Number(a.id) || 0);
+            }
+        });
+
         const startIndex = (currentPage - 1) * displaySettings.products_per_page;
         const endIndex = startIndex + displaySettings.products_per_page;
-        setPaginatedProducts(products.slice(startIndex, endIndex));
-    }, [products, currentPage, displaySettings.products_per_page]);
+        setPaginatedProducts(sorted.slice(startIndex, endIndex));
+    }, [products, currentPage, displaySettings.products_per_page, sortOption, selectedCategory]);
 
     // Hàm thêm sản phẩm vào giỏ hàng
     const addToCart = (product) => {
@@ -161,6 +204,66 @@ function Shop() {
                 </div>
             )}
 
+            {/* Thanh lọc và sắp xếp */}
+            <div className="container-fluid mb-4">
+                <div className="row px-xl-5">
+                    <div className="col-12">
+                        <div className="d-flex align-items-center gap-4 flex-wrap">
+                            <div className="d-flex align-items-center">
+                                <label className="text-dark mb-0 me-3" style={{ minWidth: '80px', fontWeight: '600' }}>
+                                    <i className="fa fa-th-list me-2 text-primary"></i>
+                                    Thể loại:
+                                </label>
+                                <select
+                                    className="form-select"
+                                    style={{ 
+                                        width: '250px',
+                                        borderColor: '#ddd',
+                                        fontSize: '14px',
+                                        padding: '8px 16px'
+                                    }}
+                                    value={selectedCategory}
+                                    onChange={(e) => {
+                                        setSelectedCategory(e.target.value);
+                                        setCurrentPage(1);
+                                    }}
+                                >
+                                    <option value="">Tất cả thể loại</option>
+                                    {categories.map(cat => (
+                                        <option key={cat.id} value={cat.id}>{cat.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="d-flex align-items-center">
+                                <label className="text-dark mb-0 me-3" style={{ minWidth: '100px', fontWeight: '600' }}>
+                                    <i className="fa fa-sort-amount-down me-2 text-primary"></i>
+                                    Sắp xếp theo:
+                                </label>
+                                <select
+                                    className="form-select"
+                                    style={{ 
+                                        width: '250px',
+                                        borderColor: '#ddd',
+                                        fontSize: '14px',
+                                        padding: '8px 16px'
+                                    }}
+                                    value={sortOption}
+                                    onChange={(e) => {
+                                        setSortOption(e.target.value);
+                                        setCurrentPage(1);
+                                    }}
+                                >
+                                    <option value="newest">Mới nhất</option>
+                                    <option value="best">Bán chạy</option>
+                                    <option value="price_asc">Giá thấp đến cao</option>
+                                    <option value="price_desc">Giá cao đến thấp</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div className="row">
                 {/* Skeleton loading when fetching */}
                 {loading && (
@@ -177,7 +280,13 @@ function Shop() {
 
                 {!loading && paginatedProducts.map((product) => {
                     const priceNumber = parseVND(product.price);
-                    const priceFormatted = formatVND(priceNumber);
+                    // Tính giá sau khi giảm nếu có discount
+                    const discountPercent = Number(product.discount) || 0;
+                    const finalPrice = discountPercent > 0 
+                        ? Math.max(0, Math.round(priceNumber * (1 - discountPercent / 100)))
+                        : priceNumber;
+                    const priceFormatted = formatVND(finalPrice);
+                    
                     return (
                         <div className="col-lg-2 col-md-3 col-sm-6 pb-1" key={product.id}>
                             <div className="card product-item border-0 mb-4">
@@ -195,8 +304,21 @@ function Shop() {
                                     <h6 className="product-title mb-2">
                                         <a href={`/shopdetail/${product.id}`} className="text-dark">{product.name}</a>
                                     </h6>
-                                    <div className="d-flex justify-content-center">
-                                        <h6 className="price-text">{priceFormatted}</h6>
+                                    <div className="d-flex justify-content-center align-items-center" style={{gap: '8px'}}>
+                                        <h6 className="price-text mb-0">{priceFormatted}</h6>
+                                        {(() => {
+                                            const hasData = !!product.oldPrice || !!product.discount;
+                                            const demo = !hasData && process.env.NODE_ENV !== 'production';
+                                            const old = product.oldPrice
+                                              ? parseVND(product.oldPrice)
+                                              : (product.discount ? priceNumber : (demo ? Math.round(priceNumber / 0.8) : null));
+                                            if (!old || !isFinite(old) || old <= finalPrice) return null;
+                                            return (
+                                                <small>
+                                                    <del className="text-muted">{formatVND(old)}</del>
+                                                </small>
+                                            );
+                                        })()}
                                     </div>
                                     {(displaySettings.show_rating || displaySettings.show_sold) && (
                                         <div className="d-flex justify-content-center align-items-center gap-2 mt-1" style={{columnGap:'8px'}}>

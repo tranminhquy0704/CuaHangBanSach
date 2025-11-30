@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { CartContext } from './CartContext';
 import Header from './Header';
 import Footer from './Footer';
+import ProductItem from './productItem';
 import axios from 'axios';
 import { parseVND, formatVND } from '../utils/currency';
 import { toast } from 'react-toastify';
@@ -11,18 +12,45 @@ function ShopDetail() {
     const { id } = useParams(); 
     const { addToCart: contextAddToCart } = useContext(CartContext);
     const [product, setProduct] = useState(null);
+    const [loading, setLoading] = useState(true);
     const [quantity, setQuantity] = useState(1);
     const [selectedRating, setSelectedRating] = useState(0);
+    const [comments, setComments] = useState([]);
+    const [newComment, setNewComment] = useState('');
+    const [relatedProducts, setRelatedProducts] = useState([]);
     const navigate = useNavigate();
 
     // Gọi API để lấy thông tin sản phẩm
     useEffect(() => {
-        axios.get(`/api/products/${id}`)
+        setLoading(true);
+        // Thêm timestamp để tránh cache
+        axios.get(`/api/products/${id}?_t=${Date.now()}`)
             .then(response => {
                 setProduct(response.data);
             })
             .catch(error => {
                 console.error('Error fetching product:', error);
+            })
+            .finally(() => {
+                setLoading(false);
+            });
+        
+        // Lấy comments
+        axios.get(`/api/products/${id}/comments`)
+            .then(response => {
+                setComments(response.data);
+            })
+            .catch(error => {
+                console.error('Error fetching comments:', error);
+            });
+        
+        // Lấy sản phẩm liên quan
+        axios.get(`/api/products/${id}/related`)
+            .then(response => {
+                setRelatedProducts(response.data);
+            })
+            .catch(error => {
+                console.error('Error fetching related products:', error);
             });
     }, [id]);
     // Hàm để thay đổi số lượng sản phẩm
@@ -45,6 +73,39 @@ function ShopDetail() {
         contextAddToCart({ ...product, quantity });
         toast.success('Đã thêm vào giỏ hàng');
     };
+    
+    // Hàm gửi comment
+    const handleSubmitComment = () => {
+        const userEmail = localStorage.getItem("userEmail");
+        const userName = localStorage.getItem("userName");
+        
+        if (!userEmail) {
+            toast.info('Bạn cần đăng nhập để bình luận');
+            navigate('/login');
+            return;
+        }
+        
+        if (!newComment.trim()) {
+            toast.warning('Vui lòng nhập nội dung bình luận');
+            return;
+        }
+        
+        axios.post(`/api/products/${id}/comments`, {
+            comment: newComment,
+            userEmail: userEmail,
+            userName: userName || 'Khách hàng'
+        })
+        .then(response => {
+            setComments([response.data, ...comments]);
+            setNewComment('');
+            toast.success('Đã thêm bình luận của bạn');
+        })
+        .catch(error => {
+            console.error('Error submitting comment:', error);
+            toast.error('Không thể gửi bình luận lúc này');
+        });
+    };
+    
     // Hiển thị thông báo nếu không tìm thấy sản phẩm
     if (!product) {
         return (
@@ -75,113 +136,133 @@ function ShopDetail() {
                 </div>
             </div>
 
-            <div className="container py-5">
-                <div className="row">
-                    <div className="col-md-4 mb-4">
-                        <img src={product.img} className="img-fluid" alt={product.name} />
+            {loading ? (
+                <div className="container py-5">
+                    <div className="text-center">
+                        <div className="spinner-border text-primary" role="status" style={{width: '3rem', height: '3rem'}}>
+                            <span className="sr-only">Đang tải...</span>
+                        </div>
+                        <p className="mt-3 text-muted">Đang tải thông tin sản phẩm...</p>
                     </div>
-                    <div className="col-md-8">
-                        <h2 className="mb-3">{product.name}</h2>
-                        {/* Info lines under title */}
-                        <div className="mb-3">
-                            <div className="row">
-                                <div className="col-md-6">
-                                    <p className="mb-1">
-                                        <span className="text-muted">Nhà cung cấp: </span>
-                                        <span className="text-primary fw-semibold">{product.supplier || 'Đang cập nhật'}</span>
-                                    </p>
-                                    <p className="mb-1">
-                                        <span className="text-muted">Nhà xuất bản: </span>
-                                        <span className="fw-semibold text-dark">{product.publisher || 'Đang cập nhật'}</span>
-                                    </p>
-                                </div>
-                                <div className="col-md-6">
+                </div>
+            ) : (
+                <>
+                    <div className="container py-5">
+                <div className="row">
+                    <div className="col-lg-5 mb-4">
+                        <div className="bg-white rounded shadow-sm p-3">
+                            <img src={product.img} className="img-fluid rounded" alt={product.name} />
+                        </div>
+                    </div>
+                    <div className="col-lg-7">
+                        <div className="bg-white rounded shadow-sm p-4">
+                            <h2 className="mb-3 fw-bold">{product.name}</h2>
+                            
+                            {/* Author and Publisher */}
+                            <div className="mb-3">
+                                {product.author && (
                                     <p className="mb-1">
                                         <span className="text-muted">Tác giả: </span>
-                                        <span className="fw-semibold text-dark">{product.author || 'Đang cập nhật'}</span>
+                                        <span className="fw-semibold">{product.author}</span>
                                     </p>
+                                )}
+                                {product.publisher && (
                                     <p className="mb-1">
-                                        <span className="text-muted">Hình thức bìa: </span>
-                                        <span className="fw-semibold text-dark">{product.coverType || 'Bìa mềm'}</span>
+                                        <span className="text-muted">Nhà xuất bản: </span>
+                                        <span className="fw-semibold">{product.publisher}</span>
                                     </p>
+                                )}
+                            </div>
+
+                            {/* Rating and Sales */}
+                            <div className="d-flex align-items-center mb-3 pb-3 border-bottom">
+                                <div className="d-flex align-items-center">
+                                    <div className="text-warning me-2">
+                                        {[1, 2, 3, 4, 5].map((star) => (
+                                            <i key={star} className={star <= Math.round(Number(product.rating || 0)) ? 'fas fa-star' : 'far fa-star'}></i>
+                                        ))}
+                                    </div>
+                                    <span className="fw-semibold">{Number(product.rating || 0).toFixed(1)}</span>
+                                    <span className="text-muted ms-1">({product.rating_count || 0} đánh giá)</span>
+                                </div>
+                                <div className="mx-4" style={{width: '1px', height: '20px', backgroundColor: '#dee2e6'}}></div>
+                                <div>
+                                    <span className="text-muted">Đã bán: </span>
+                                    <strong>{product.sold || 0}</strong>
                                 </div>
                             </div>
-                        </div>
 
-                        <div className="row">
-                            <div className="col-md-6">
-                                <div className="d-flex align-items-center mb-3">
-                                    <div className="me-3">
-                                        <span className="text-warning">
-                                            <i className="fas fa-star"></i>
-                                            <i className="fas fa-star"></i>
-                                            <i className="fas fa-star"></i>
-                                            <i className="fas fa-star"></i>
-                                            <i className="far fa-star"></i>
-                                        </span>
-                                        <span className="ms-2 text-muted">(0 đánh giá)</span>
-                                    </div>
-                                    <div className="vr"></div>
-                                    <div className="mx-3">
-                                        <span className="text-muted">Đã bán: </span>
-                                        <strong>{product.sold || 0}</strong>
-                                    </div>
+                            {/* Price Section */}
+                            <div className="mb-4">
+                                <div className="d-flex align-items-center" style={{gap: '15px'}}>
+                                    {(() => {
+                                        const rawPrice = parseVND(product.price);
+                                        // Nếu là flash sale, tính giá sau khi giảm
+                                        const isFlashSale = product.is_flashsale === 1 || product.is_flashsale === true;
+                                        const discountPercent = isFlashSale && product.discount ? Number(product.discount) : 0;
+                                        const finalPrice = isFlashSale && discountPercent > 0 
+                                            ? Math.max(0, Math.round(rawPrice * (1 - discountPercent / 100)))
+                                            : rawPrice;
+                                        
+                                        return (
+                                            <>
+                                                <h3 className="text-danger fw-bold mb-0" style={{fontSize: '1.8rem'}}>{formatVND(finalPrice)}</h3>
+                                                {(() => {
+                                                    const hasData = !!product.oldPrice || !!product.discount;
+                                                    const demo = !hasData && process.env.NODE_ENV !== 'production';
+                                                    const old = product.oldPrice
+                                                      ? parseVND(product.oldPrice)
+                                                      : (product.discount ? Math.round(rawPrice / (1 - product.discount / 100)) : (demo ? Math.round(rawPrice / 0.8) : null));
+                                                    
+                                                    // Nếu là flash sale, old price là giá gốc
+                                                    const oldPrice = isFlashSale && discountPercent > 0 ? rawPrice : old;
+                                                    
+                                                    if (!oldPrice || !isFinite(oldPrice) || oldPrice <= finalPrice) return null;
+                                                    const percent = Math.max(0, Math.round((1 - finalPrice / oldPrice) * 100));
+                                                    return (
+                                                        <>
+                                                            <del className="text-muted" style={{fontSize: '1.1rem'}}>{formatVND(oldPrice)}</del>
+                                                            <span className="badge bg-danger text-white px-2 py-1" style={{fontSize: '0.9rem'}}>-{percent}%</span>
+                                                        </>
+                                                    );
+                                                })()}
+                                            </>
+                                        );
+                                    })()}
                                 </div>
                             </div>
-                        </div>
 
-                        <div className="row">
-                            <div className="col-md-6">
-                                <div className="bg-light p-3 mb-4 rounded">
-                                    <div className="d-flex align-items-baseline mb-2 gap-3">
-                                        <h3 className="price-current mb-0">{formatVND(parseVND(product.price))}</h3>
-                                        {(() => {
-                                            const price = parseVND(product.price);
-                                            const hasData = !!product.oldPrice || !!product.discount;
-                                            const demo = !hasData && process.env.NODE_ENV !== 'production';
-                                            const old = product.oldPrice
-                                              ? parseVND(product.oldPrice)
-                                              : (product.discount ? Math.round(price / (1 - product.discount / 100)) : (demo ? Math.round(price / 0.8) : null));
-                                            if (!old || !isFinite(old) || old <= price) return null;
-                                            const percent = Math.max(0, Math.round((1 - price / old) * 100));
-                                            return (
-                                                <div className="d-inline-flex align-items-baseline ms-3" style={{gap: '10px'}}>
-                                                    <span className="price-old">{formatVND(old)}</span>
-                                                    <span className="discount-badge">-{percent}%</span>
-                                                </div>
-                                            );
-                                        })()}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="row">
-                            <div className="col-md-6">
-                                <div className="d-flex align-items-center mb-4">
-                                    <div className="input-group input-group-sm me-3" style={{ width: '120px' }}>
+                            {/* Quantity and Add to Cart */}
+                            <div className="d-flex align-items-center gap-3 mb-4">
+                                <div>
+                                    <label className="form-label text-muted mb-2">Số lượng</label>
+                                    <div className="input-group" style={{ width: '140px' }}>
                                         <button 
-                                            className="btn btn-outline-secondary btn-sm" 
+                                            className="btn btn-outline-secondary" 
                                             onClick={() => handleQuantityChange('decrease')}
                                         >
                                             <i className="fas fa-minus"></i>
                                         </button>
                                         <input 
                                             type="text" 
-                                            className="form-control form-control-sm text-center" 
+                                            className="form-control text-center fw-bold" 
                                             value={quantity} 
                                             readOnly 
                                         />
                                         <button 
-                                            className="btn btn-outline-secondary btn-sm" 
+                                            className="btn btn-outline-secondary" 
                                             onClick={() => handleQuantityChange('increase')}
                                         >
                                             <i className="fas fa-plus"></i>
                                         </button>
                                     </div>
+                                </div>
+                                <div className="flex-grow-1">
+                                    <label className="form-label text-white mb-2">.</label>
                                     <button 
-                                        className="btn btn-danger btn-sm px-3 me-2"
+                                        className="btn btn-danger w-100 py-2 fw-semibold"
                                         onClick={handleAddToCart}
+                                        style={{fontSize: '1.1rem'}}
                                     >
                                         <i className="fas fa-shopping-cart me-2"></i>
                                         Thêm vào giỏ hàng
@@ -189,56 +270,68 @@ function ShopDetail() {
                                 </div>
                             </div>
                         </div>
-
                     </div>
                 </div>
-                <div className="row mt-4">
+                <div className="row mt-5">
                     <div className="col-12">
-                        <h4 className="mb-3">Mô tả sản phẩm</h4>
-                        <div className="bg-light p-3 rounded">
-                            <p className="mb-0">{product.description || 'Đang cập nhật mô tả sản phẩm.'}</p>
+                        <div className="bg-white rounded shadow-sm p-4">
+                            <h4 className="mb-4 fw-bold border-bottom pb-3">
+                                Mô tả sản phẩm
+                            </h4>
+                            <div className="text-muted" style={{lineHeight: '1.8'}}>
+                                {product.description || 'Đang cập nhật mô tả sản phẩm.'}
+                            </div>
                         </div>
                     </div>
                 </div>
                 {/* Review Section */}
                 <div className="row mt-5">
                     <div className="col-12">
-                        <h4 className="mb-4">Đánh giá sản phẩm</h4>
-                        
-                        {/* Rating Summary */}
-                        <div className="row mb-4">
-                            <div className="col-md-3 text-center">
-                                <h1 className="text-warning mb-0">4.5</h1>
-                                <div className="mb-2">
-                                    <i className="fas fa-star text-warning"></i>
-                                    <i className="fas fa-star text-warning"></i>
-                                    <i className="fas fa-star text-warning"></i>
-                                    <i className="fas fa-star text-warning"></i>
-                                    <i className="far fa-star text-warning"></i>
-                                </div>
-                                <p className="text-muted">(0 đánh giá)</p>
-                            </div>
-                            <div className="col-md-9">
-                                {[5, 4, 3, 2, 1].map((star) => (
-                                    <div key={star} className="d-flex align-items-center mb-2">
-                                        <div className="text-nowrap me-2" style={{width: '50px'}}>
-                                            {star} <i className="fas fa-star text-warning"></i>
+                        <div className="bg-white rounded shadow-sm p-4">
+                            <h4 className="mb-4 fw-bold border-bottom pb-3">
+                                <i className="fas fa-star text-warning me-2"></i>
+                                Đánh giá sản phẩm
+                            </h4>
+                            
+                            {/* Rating Summary */}
+                            <div className="row mb-4">
+                                <div className="col-md-3 text-center">
+                                    <div className="bg-light rounded p-4">
+                                        <h1 className="text-warning mb-1 fw-bold" style={{fontSize: '3rem'}}>{Number(product.rating || 0).toFixed(1)}</h1>
+                                        <div className="mb-2" style={{fontSize: '1.2rem'}}>
+                                            {[1, 2, 3, 4, 5].map((star) => (
+                                                <i key={star} className={star <= Math.round(Number(product.rating || 0)) ? 'fas fa-star text-warning' : 'far fa-star text-warning'}></i>
+                                            ))}
                                         </div>
-                                        <div className="progress flex-grow-1" style={{height: '8px'}}>
-                                            <div 
-                                                className="progress-bar bg-warning" 
-                                                style={{
-                                                    width: `${(star === 5 ? 70 : star === 4 ? 15 : star === 3 ? 10 : star === 2 ? 5 : 0)}%`
-                                                }}
-                                            ></div>
-                                        </div>
-                                        <div className="ms-2 text-muted" style={{width: '30px'}}>
-                                            {star === 5 ? '70%' : star === 4 ? '15%' : star === 3 ? '10%' : star === 2 ? '5%' : '0%'}
-                                        </div>
+                                        <p className="text-muted mb-0"><strong>{product.rating_count || 0}</strong> đánh giá</p>
                                     </div>
-                                ))}
+                                </div>
+                                <div className="col-md-9">
+                                    {[5, 4, 3, 2, 1].map((star) => {
+                                        const ratingCount = Number(product.rating_count || 0);
+                                        const starCount = Number(product[`star_${star}`] || 0);
+                                        const percentage = ratingCount > 0 ? Math.round((starCount / ratingCount) * 100) : 0;
+                                        return (
+                                            <div key={star} className="d-flex align-items-center mb-2">
+                                                <div className="text-nowrap me-3" style={{width: '60px'}}>
+                                                    {star} <i className="fas fa-star text-warning"></i>
+                                                </div>
+                                                <div className="progress flex-grow-1" style={{height: '10px'}}>
+                                                    <div 
+                                                        className="progress-bar bg-warning" 
+                                                        style={{
+                                                            width: `${percentage}%`
+                                                        }}
+                                                    ></div>
+                                                </div>
+                                                <div className="ms-3 text-muted fw-semibold" style={{width: '40px'}}>
+                                                    {percentage}%
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             </div>
-                        </div>
 
                         <div className="mb-4">
                             <label className="form-label">Chọn đánh giá của bạn</label>
@@ -257,8 +350,17 @@ function ShopDetail() {
                                             setSelectedRating(star);
                                             axios.post(`/api/products/${id}/rating`, { stars: star })
                                               .then(res => {
-                                                if (res?.data?.rating != null) {
-                                                  setProduct(prev => ({ ...prev, rating: res.data.rating }));
+                                                if (res?.data) {
+                                                  setProduct(prev => ({ 
+                                                    ...prev, 
+                                                    rating: res.data.rating,
+                                                    rating_count: res.data.rating_count,
+                                                    star_1: res.data.star_1,
+                                                    star_2: res.data.star_2,
+                                                    star_3: res.data.star_3,
+                                                    star_4: res.data.star_4,
+                                                    star_5: res.data.star_5
+                                                  }));
                                                 }
                                                 toast.success(`Bạn đã đánh giá ${star} sao`);
                                               })
@@ -395,9 +497,102 @@ function ShopDetail() {
                                 </ul>
                             </nav>
                         </div>
+                        </div>
                     </div>
                 </div>
+                
+                {/* Comments Section */}
+                <div className="row mt-5">
+                    <div className="col-12">
+                        <div className="bg-white rounded shadow-sm p-4">
+                            <h4 className="mb-4 fw-bold border-bottom pb-3">
+                                <i className="fas fa-comments text-primary me-2"></i>
+                                Bình luận ({comments.length})
+                            </h4>
+                            
+                            {/* Comment Form */}
+                            <div className="mb-4 p-3 bg-light rounded">
+                                <textarea 
+                                    className="form-control mb-3" 
+                                    rows="3" 
+                                    placeholder="Chia sẻ cảm nghĩ của bạn về cuốn sách này..."
+                                    value={newComment}
+                                    onChange={(e) => setNewComment(e.target.value)}
+                                ></textarea>
+                                <div className="d-flex justify-content-end">
+                                    <button 
+                                        className="btn btn-primary"
+                                        onClick={handleSubmitComment}
+                                    >
+                                        <i className="fas fa-paper-plane me-2"></i>
+                                        Gửi bình luận
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            {/* Comments List */}
+                            <div className="comments-list">
+                                {comments.length === 0 ? (
+                                    <div className="text-center text-muted py-5">
+                                        <i className="fas fa-comment-slash fa-3x mb-3"></i>
+                                        <p>Chưa có bình luận nào. Hãy là người đầu tiên chia sẻ cảm nghĩ!</p>
+                                    </div>
+                                ) : (
+                                    comments.map((comment) => (
+                                        <div key={comment.id} className="mb-3 pb-3 border-bottom">
+                                            <div className="d-flex align-items-start">
+                                                <div className="bg-primary text-white rounded-circle d-flex align-items-center justify-content-center me-3" 
+                                                     style={{width: '40px', height: '40px', fontSize: '1.2rem'}}>
+                                                    {comment.user_name.charAt(0).toUpperCase()}
+                                                </div>
+                                                <div className="flex-grow-1">
+                                                    <div className="d-flex justify-content-between mb-1">
+                                                        <span className="fw-bold">{comment.user_name}</span>
+                                                        <span className="text-muted small">
+                                                            {new Date(comment.created_at).toLocaleDateString('vi-VN', {
+                                                                year: 'numeric',
+                                                                month: '2-digit',
+                                                                day: '2-digit',
+                                                                hour: '2-digit',
+                                                                minute: '2-digit'
+                                                            })}
+                                                        </span>
+                                                    </div>
+                                                    <p className="mb-0">{comment.comment}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                {/* Related Products Section */}
+                {relatedProducts.length > 0 && (
+                    <div className="row mt-5">
+                        <div className="col-12">
+                            <div className="text-center mb-4">
+                                <h2 className="section-title px-5">
+                                    <span className="px-2">Sách Liên Quan</span>
+                                </h2>
+                            </div>
+                            <div className="row px-xl-5 justify-content-center">
+                                {relatedProducts.map((relatedProduct) => (
+                                    <ProductItem
+                                        key={relatedProduct.id}
+                                        product={relatedProduct}
+                                        addToCart={contextAddToCart}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
+                </>
+            )}
 
             <Footer />
         </Fragment>

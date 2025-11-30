@@ -6,6 +6,8 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const { OpenAI } = require('openai');
+const fetch = require('node-fetch');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -39,6 +41,15 @@ db.connect((err) => {
     console.error('Database connection error:', err);
   } else {
     console.log('Connected to MySQL. DB:', (process.env.DB_NAME || 'shopbansach'));
+    // Ensure chat tables exist for storing conversations/messages
+    try {
+      ensureChatTables((chatErr) => {
+        if (chatErr) console.error('Chat tables creation error:', chatErr);
+        else console.log('Chat tables ready');
+      });
+    } catch (e) {
+      console.error('ensureChatTables not available at startup:', e);
+    }
   }
 });
 
@@ -389,14 +400,118 @@ function parseVNDValue(value) {
   return Number(str) || 0;
 }
 
+function formatVND(amount) {
+  if (amount == null || isNaN(amount)) return '0 ₫';
+  return Math.round(amount).toLocaleString('vi-VN') + ' ₫';
+}
+
 function calculateCartSubtotal(items) {
   if (!Array.isArray(items)) return 0;
   return items.reduce((sum, item) => {
+    // Sử dụng price (giá sau sale) - đây là số tiền customer thực tế trả
     const unit = parseVNDValue(item?.price);
     const qty = Number(item?.quantity) || 1;
     return sum + unit * qty;
   }, 0);
 }
+
+// Chat persistence: create tables and simple endpoints to store/retrieve messages
+function ensureChatTables(cb) {
+  const sql1 = `CREATE TABLE IF NOT EXISTS conversations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    session_id VARCHAR(128) NOT NULL UNIQUE,
+    user_id INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  )`;
+  const sql2 = `CREATE TABLE IF NOT EXISTS chat_messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    conversation_id INT NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+  )`;
+  db.query(sql1, (err) => {
+    if (err) return cb(err);
+    db.query(sql2, cb);
+  });
+}
+
+// Start a new conversation (returns sessionId)
+app.post('/chat/start', (req, res) => {
+  const userId = getUserIdFromAuth(req);
+  const sessionId = 's_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+  db.query('INSERT INTO conversations (session_id, user_id) VALUES (?, ?)', [sessionId, userId], (err, result) => {
+    if (err) {
+      console.error('Error creating conversation:', err);
+      return res.status(500).json({ message: 'Không thể tạo cuộc trò chuyện' });
+    }
+    res.json({ sessionId });
+  });
+});
+
+// Append a message to an existing conversation
+app.post('/chat/message', (req, res) => {
+  const { sessionId, role, content } = req.body || {};
+  if (!sessionId || !content) return res.status(400).json({ message: 'sessionId và content là bắt buộc' });
+  db.query('SELECT id FROM conversations WHERE session_id = ? LIMIT 1', [sessionId], (err, rows) => {
+    if (err) {
+      console.error('Error selecting conversation:', err);
+      return res.status(500).json({ message: 'Lỗi truy vấn' });
+    }
+    if (!rows || rows.length === 0) return res.status(404).json({ message: 'Conversation not found' });
+    const convId = rows[0].id;
+    db.query('INSERT INTO chat_messages (conversation_id, role, content) VALUES (?, ?, ?)', [convId, role || 'user', content], (iErr, result) => {
+      if (iErr) {
+        console.error('Error inserting chat message:', iErr);
+        return res.status(500).json({ message: 'Không thể lưu tin nhắn' });
+      }
+      res.json({ ok: true, messageId: result.insertId });
+    });
+  });
+});
+
+// Get messages for a session
+app.get('/chat/:sessionId', (req, res) => {
+  const sessionId = req.params.sessionId;
+  db.query('SELECT id FROM conversations WHERE session_id = ? LIMIT 1', [sessionId], (err, rows) => {
+    if (err) return res.status(500).json({ message: 'Lỗi truy vấn' });
+    if (!rows || rows.length === 0) return res.json({ messages: [] });
+    const convId = rows[0].id;
+    db.query('SELECT role, content, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id ASC', [convId], (mErr, mRows) => {
+      if (mErr) return res.status(500).json({ message: 'Lỗi truy vấn tin nhắn' });
+      res.json({ messages: mRows || [] });
+    });
+  });
+});
+
+// Debug: show whether chat tables exist and row counts
+app.get('/debug/chat-tables', (req, res) => {
+  const dbName = process.env.DB_NAME || 'shopbansach';
+  const checkSql = `SELECT TABLE_NAME FROM information_schema.tables WHERE table_schema = ? AND TABLE_NAME IN ('conversations','chat_messages')`;
+  db.query(checkSql, [dbName], (err, rows) => {
+    if (err) return res.status(500).json({ error: 'Lỗi truy vấn information_schema', detail: err.message });
+    const found = (rows || []).map(r => r.TABLE_NAME);
+    const result = { database: dbName, foundTables: found, counts: {} };
+    const tasks = [];
+    if (found.includes('conversations')) {
+      tasks.push((cb) => db.query('SELECT COUNT(*) AS c FROM conversations', (e, r) => { result.counts.conversations = (r && r[0] && r[0].c) || 0; cb(e); }));
+    }
+    if (found.includes('chat_messages')) {
+      tasks.push((cb) => db.query('SELECT COUNT(*) AS c FROM chat_messages', (e, r) => { result.counts.chat_messages = (r && r[0] && r[0].c) || 0; cb(e); }));
+    }
+    // run tasks in sequence
+    const run = (i=0) => {
+      if (i >= tasks.length) return res.json(result);
+      tasks[i]((taskErr) => {
+        if (taskErr) return res.status(500).json({ error: 'Lỗi khi đếm hàng', detail: taskErr.message });
+        run(i+1);
+      });
+    };
+    run();
+  });
+});
 
 function calculateVoucherDiscountAmount(voucher, subtotal) {
   if (!voucher || subtotal <= 0) return 0;
@@ -573,8 +688,9 @@ app.get('/api/products', (req, res) => {
     const alter1 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS category_id INT NULL';
     const alter2 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS publisher_id INT NULL';
     const alter3 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS author_id INT NULL';
+    const alter4 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS is_flashsale TINYINT(1) DEFAULT 0';
     
-    db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => {
+    db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => db.query(alter4, () => {
       let sql = `SELECT DISTINCT p.* 
         FROM product p 
         LEFT JOIN category c ON p.category_id = c.id 
@@ -600,28 +716,45 @@ app.get('/api/products', (req, res) => {
           return;
         }
         console.log('[API Products] Search results count:', results?.length || 0, 'for query:', searchQuery);
+        // Tắt cache để luôn lấy dữ liệu mới nhất
+        res.set({
+          'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        });
         res.json(results || []);
       });
-    })));
+    }))));
   } else {
     // Nếu không có search, lấy tất cả sản phẩm
     console.log('[API Products] No search query, returning all products');
-    let query = 'SELECT * FROM product';
-    
-    // Filter out of stock if auto_hide is enabled
-    if (autoHide) {
-      query += ' WHERE (stock IS NULL OR stock > 0)';
-    }
-    
-    query += ' ORDER BY id DESC';
-    
-    db.query(query, (err, results) => {
-      if (err) {
-        console.error('Error fetching products:', err);
-        res.status(500).json({ message: 'Internal server error' });
-        return;
+    const alter4 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS is_flashsale TINYINT(1) DEFAULT 0';
+    db.query(alter4, () => {
+      let query = `SELECT p.*, c.name as category_name 
+                   FROM product p 
+                   LEFT JOIN category c ON p.category_id = c.id`;
+      
+      // Filter out of stock if auto_hide is enabled
+      if (autoHide) {
+        query += ' WHERE (p.stock IS NULL OR p.stock > 0)';
       }
-      res.json(results || []);
+      
+      query += ' ORDER BY p.id DESC';
+      
+      db.query(query, (err, results) => {
+        if (err) {
+          console.error('Error fetching products:', err);
+          res.status(500).json({ message: 'Internal server error' });
+          return;
+        }
+        // Tắt cache để luôn lấy dữ liệu mới nhất
+        res.set({
+          'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        });
+        res.json(results || []);
+      });
     });
   }
   });
@@ -639,60 +772,14 @@ app.get('/api/products/:id', (req, res) => {
     if (results.length === 0) {
       res.status(404).json({ message: 'Product not found' });
     } else {
+      // Tắt cache để luôn lấy dữ liệu mới nhất
+      res.set({
+        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
       res.json(results[0]);
     }
-  });
-});
-
-app.post('/admin/products', authenticateAdmin, (req, res) => {
-  const { name, price, description, img, rating, sold, sale_total, sale_sold } = req.body;
-  if (!name || !price || !description || !img) {
-    return res.status(400).json({ message: 'Missing product data' });
-  }
-  // Defaults for optional fields
-  const ratingVal = typeof rating === 'number' ? rating : 4.5;
-  const soldVal = Number.isInteger(sold) ? sold : 0;
-  const saleTotalVal = Number.isInteger(sale_total) ? sale_total : 0;
-  const saleSoldVal = Number.isInteger(sale_sold) ? sale_sold : 0;
-  const query = 'INSERT INTO product (name, price, description, img, rating, sold, sale_total, sale_sold) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
-  db.query(query, [name, price, description, img, ratingVal, soldVal, saleTotalVal, saleSoldVal], (err, results) => {
-    if (err) {
-      console.error('Error adding product:', err);
-      return res.status(500).json({ message: 'Internal server error' });
-    }
-    res.status(201).json({ message: 'Product added successfully', id: results.insertId });
-  });
-});
-
-app.put('/admin/products/:id', authenticateAdmin, (req, res) => {
-  const productId = req.params.id;
-  const { name, price, description, img, rating, sold, sale_total, sale_sold } = req.body;
-  if (!name || !price || !description || !img) {
-    return res.status(400).json({ message: 'Missing product data' });
-  }
-  const ratingVal = typeof rating === 'number' ? rating : 4.5;
-  const soldVal = Number.isInteger(sold) ? sold : 0;
-  const saleTotalVal = Number.isInteger(sale_total) ? sale_total : 0;
-  const saleSoldVal = Number.isInteger(sale_sold) ? sale_sold : 0;
-  const query = 'UPDATE product SET name = ?, price = ?, description = ?, img = ?, rating = ?, sold = ?, sale_total = ?, sale_sold = ? WHERE id = ?';
-  db.query(query, [name, price, description, img, ratingVal, soldVal, saleTotalVal, saleSoldVal, productId], (err) => {
-    if (err) {
-      console.error('Error updating product:', err);
-      return res.status(500).json({ message: 'Internal server error' });
-    }
-    res.status(200).json({ message: 'Product updated successfully' });
-  });
-});
-
-app.delete('/admin/products/:id', authenticateAdmin, (req, res) => {
-  const productId = req.params.id;
-  const query = 'DELETE FROM product WHERE id = ?';
-  db.query(query, [productId], (err) => {
-    if (err) {
-      console.error('Error deleting product:', err);
-      return res.status(500).json({ message: 'Internal server error' });
-    }
-    res.status(200).json({ message: 'Product deleted successfully' });
   });
 });
 
@@ -703,34 +790,165 @@ app.post('/api/products/:id/rating', (req, res) => {
   if (!Number.isFinite(stars) || stars < 1 || stars > 5) {
     return res.status(400).json({ message: 'stars must be 1..5' });
   }
-  // Read current rating and rating_count; if rating_count column is missing, return error hint
-  db.query('SELECT rating, rating_count FROM product WHERE id = ?', [productId], (err, rows) => {
-    if (err) {
-      console.error('SELECT rating error:', err);
-      // Likely missing rating_count column
-      return res.status(500).json({ message: 'Internal server error' });
-    }
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    const cur = rows[0];
-    const count = Number(cur.rating_count) || 0;
-    const currentRating = Number(cur.rating) || 0;
-    const newCount = count + 1;
-    const newRating = Math.max(0, Math.min(5, (currentRating * count + stars) / newCount));
-    db.query('UPDATE product SET rating = ?, rating_count = ? WHERE id = ?', [newRating, newCount, productId], (uErr) => {
-      if (uErr) {
-        console.error('UPDATE rating error:', uErr);
+  
+  // Thêm các cột star_1 đến star_5 nếu chưa có
+  const alterQueries = [
+    'ALTER TABLE product ADD COLUMN IF NOT EXISTS star_1 INT DEFAULT 0',
+    'ALTER TABLE product ADD COLUMN IF NOT EXISTS star_2 INT DEFAULT 0',
+    'ALTER TABLE product ADD COLUMN IF NOT EXISTS star_3 INT DEFAULT 0',
+    'ALTER TABLE product ADD COLUMN IF NOT EXISTS star_4 INT DEFAULT 0',
+    'ALTER TABLE product ADD COLUMN IF NOT EXISTS star_5 INT DEFAULT 0'
+  ];
+  
+  Promise.all(alterQueries.map(sql => new Promise((resolve) => {
+    db.query(sql, () => resolve());
+  }))).then(() => {
+    // Đọc rating hiện tại và số lượng từng loại sao
+    db.query('SELECT rating, rating_count, star_1, star_2, star_3, star_4, star_5 FROM product WHERE id = ?', [productId], (err, rows) => {
+      if (err) {
+        console.error('SELECT rating error:', err);
         return res.status(500).json({ message: 'Internal server error' });
       }
-      res.json({ id: productId, rating: newRating, rating_count: newCount });
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: 'Product not found' });
+      }
+      const cur = rows[0];
+      const count = Number(cur.rating_count) || 0;
+      const currentRating = Number(cur.rating) || 0;
+      const newCount = count + 1;
+      const newRating = Math.max(0, Math.min(5, (currentRating * count + stars) / newCount));
+      
+      // Cập nhật số lượng sao tương ứng
+      const starCounts = {
+        star_1: Number(cur.star_1) || 0,
+        star_2: Number(cur.star_2) || 0,
+        star_3: Number(cur.star_3) || 0,
+        star_4: Number(cur.star_4) || 0,
+        star_5: Number(cur.star_5) || 0
+      };
+      starCounts[`star_${stars}`]++;
+      
+      db.query(
+        'UPDATE product SET rating = ?, rating_count = ?, star_1 = ?, star_2 = ?, star_3 = ?, star_4 = ?, star_5 = ? WHERE id = ?',
+        [newRating, newCount, starCounts.star_1, starCounts.star_2, starCounts.star_3, starCounts.star_4, starCounts.star_5, productId],
+        (uErr) => {
+          if (uErr) {
+            console.error('UPDATE rating error:', uErr);
+            return res.status(500).json({ message: 'Internal server error' });
+          }
+          res.json({ 
+            id: productId, 
+            rating: newRating, 
+            rating_count: newCount,
+            star_1: starCounts.star_1,
+            star_2: starCounts.star_2,
+            star_3: starCounts.star_3,
+            star_4: starCounts.star_4,
+            star_5: starCounts.star_5
+          });
+        }
+      );
     });
+  });
+});
+
+// Comments API
+// Tạo bảng comments nếu chưa có
+db.query(`
+  CREATE TABLE IF NOT EXISTS comments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id INT NOT NULL,
+    user_email VARCHAR(255) NOT NULL,
+    user_name VARCHAR(255) NOT NULL,
+    comment TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES product(id) ON DELETE CASCADE
+  )
+`, (err) => {
+  if (err) console.error('Error creating comments table:', err);
+});
+
+// Lấy danh sách comments của sản phẩm
+app.get('/api/products/:id/comments', (req, res) => {
+  const productId = parseInt(req.params.id, 10);
+  db.query(
+    'SELECT id, user_name, comment, created_at FROM comments WHERE product_id = ? ORDER BY created_at DESC',
+    [productId],
+    (err, results) => {
+      if (err) {
+        console.error('Error fetching comments:', err);
+        return res.status(500).json({ message: 'Internal server error' });
+      }
+      res.json(results);
+    }
+  );
+});
+
+// Thêm comment mới
+app.post('/api/products/:id/comments', (req, res) => {
+  const productId = parseInt(req.params.id, 10);
+  const { comment, userEmail, userName } = req.body;
+  
+  if (!comment || !comment.trim()) {
+    return res.status(400).json({ message: 'Comment không được để trống' });
+  }
+  
+  if (!userEmail || !userName) {
+    return res.status(400).json({ message: 'Bạn cần đăng nhập để bình luận' });
+  }
+  
+  db.query(
+    'INSERT INTO comments (product_id, user_email, user_name, comment) VALUES (?, ?, ?, ?)',
+    [productId, userEmail, userName, comment.trim()],
+    (err, result) => {
+      if (err) {
+        console.error('Error inserting comment:', err);
+        return res.status(500).json({ message: 'Internal server error' });
+      }
+      res.status(201).json({
+        id: result.insertId,
+        product_id: productId,
+        user_name: userName,
+        comment: comment.trim(),
+        created_at: new Date()
+      });
+    }
+  );
+});
+
+// Lấy sản phẩm liên quan theo category
+app.get('/api/products/:id/related', (req, res) => {
+  const productId = parseInt(req.params.id, 10);
+  
+  // Lấy category_id của sản phẩm hiện tại
+  db.query('SELECT category_id FROM product WHERE id = ?', [productId], (err, rows) => {
+    if (err || !rows || rows.length === 0) {
+      return res.json([]);
+    }
+    
+    const categoryId = rows[0].category_id;
+    if (!categoryId) {
+      return res.json([]);
+    }
+    
+    // Lấy 6 sản phẩm cùng category, trừ sản phẩm hiện tại
+    db.query(
+      'SELECT id, name, price, img, rating, sold FROM product WHERE category_id = ? AND id != ? ORDER BY sold DESC, rating DESC LIMIT 6',
+      [categoryId, productId],
+      (err2, results) => {
+        if (err2) {
+          console.error('Error fetching related products:', err2);
+          return res.status(500).json({ message: 'Internal server error' });
+        }
+        res.json(results);
+      }
+    );
   });
 });
 
 // Orders
 app.post('/api/orders', (req, res) => {
-  const { fullName, mobile, address, state, paymentMethod, total, cartItems, voucherCode, userVoucherId } = req.body;
+  const { fullName, mobile, address, state, paymentMethod, total, cartItems, subtotal: clientSubtotal, voucherCode, userVoucherId } = req.body;
   const missingRequired =
     !fullName || String(fullName).trim() === '' ||
     !mobile || String(mobile).trim() === '' ||
@@ -744,7 +962,15 @@ app.post('/api/orders', (req, res) => {
   }
   const userId = getUserIdFromAuth(req);
   const normalizedItems = Array.isArray(cartItems) ? cartItems : [];
-  const subtotal = calculateCartSubtotal(normalizedItems);
+  // Sử dụng subtotal từ client (đã bao gồm giá sau sale) để validate voucher
+  const subtotal = clientSubtotal ? Number(clientSubtotal) : calculateCartSubtotal(normalizedItems);
+  console.log('[Orders] ===== ORDER DEBUG =====');
+  console.log('[Orders] Cart items count:', normalizedItems.length);
+  console.log('[Orders] Subtotal from client:', clientSubtotal);
+  console.log('[Orders] Subtotal used for validation:', subtotal);
+  console.log('[Orders] Total from client:', total);
+  console.log('[Orders] Voucher code:', voucherCode);
+  console.log('[Orders] User voucher ID:', userVoucherId);
   const normalizedVoucherCode = typeof voucherCode === 'string' ? voucherCode.trim().toUpperCase() : '';
   const normalizedUserVoucherId = userVoucherId ? Number(userVoucherId) : null;
   const safeTotal = Math.max(0, Number(total) || 0);
@@ -786,7 +1012,15 @@ app.post('/api/orders', (req, res) => {
           }
           if (voucherContext.userVoucherId) {
             afterOrderTasks.push((next) => {
-              db.query('UPDATE user_vouchers SET is_used = TRUE, used_at = NOW() WHERE id = ?', [voucherContext.userVoucherId], () => next());
+              console.log('[Orders] Marking user_voucher as used:', voucherContext.userVoucherId);
+              db.query('UPDATE user_vouchers SET is_used = TRUE, used_at = NOW() WHERE id = ?', [voucherContext.userVoucherId], (err, result) => {
+                if (err) {
+                  console.error('[Orders] Error marking voucher as used:', err);
+                } else {
+                  console.log('[Orders] Voucher marked as used, affected rows:', result?.affectedRows);
+                }
+                next();
+              });
             });
           }
           if (userId) {
@@ -860,9 +1094,22 @@ app.post('/api/orders', (req, res) => {
         if (voucher.end_date && new Date(voucher.end_date) < now) {
           return res.status(400).json({ message: 'Voucher đã hết hạn' });
         }
+        console.log('[Orders] Voucher validation - code:', voucher.code, 'min_order:', voucher.min_order_amount, 'subtotal:', subtotal);
+        
+        // Kiểm tra điều kiện tối thiểu trên subtotal GỐC
+        const minAmount = Number(voucher.min_order_amount || 0);
+        if (subtotal < minAmount) {
+          console.log('[Orders] Subtotal below minimum:', subtotal, '<', minAmount);
+          return res.status(400).json({ message: `Đơn hàng cần tối thiểu ${formatVND(minAmount)} để dùng voucher này` });
+        }
+        
+        // Tính discount trên subtotal
         const discount = calculateVoucherDiscountAmount(voucher, subtotal);
+        console.log('[Orders] Calculated discount:', discount);
+        
         if (discount <= 0) {
-          return res.status(400).json({ message: `Đơn hàng cần tối thiểu ${voucher.min_order_amount ? `${voucher.min_order_amount} ₫` : ''} để dùng voucher này` });
+          console.log('[Orders] Discount is zero or negative');
+          return res.status(400).json({ message: 'Không thể áp dụng voucher này cho đơn hàng' });
         }
         const context = {
           code: voucher.code,
@@ -910,7 +1157,21 @@ app.post('/api/orders', (req, res) => {
           if (!vRows || vRows.length === 0) {
             return res.status(404).json({ message: 'Voucher không tồn tại' });
           }
-          onVoucherLoaded(vRows[0], null);
+          // Kiểm tra xem user đã claim voucher này và đã dùng chưa
+          if (userId) {
+            db.query('SELECT * FROM user_vouchers WHERE user_id = ? AND voucher_id = ? LIMIT 1', [userId, vRows[0].id], (uvErr, uvRows) => {
+              if (uvErr) {
+                console.error('Check user voucher error:', uvErr);
+              }
+              const userVoucher = uvRows && uvRows.length > 0 ? uvRows[0] : null;
+              if (userVoucher && userVoucher.is_used) {
+                return res.status(400).json({ message: 'Voucher này đã được sử dụng' });
+              }
+              onVoucherLoaded(vRows[0], userVoucher);
+            });
+          } else {
+            onVoucherLoaded(vRows[0], null);
+          }
         });
       } else {
         finalizeOrder();
@@ -1025,19 +1286,38 @@ app.get('/admin', (req, res) => {
 // Admin Dashboard: Metrics cards
 app.get('/admin/metrics', authenticateAdmin, (req, res) => {
   const total_num = "CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(total,'₫',''),' đ',''),'đ',''),',',''),' ','') AS DECIMAL(14,2))";
-  const sql = `
-    SELECT
-      IFNULL(SUM(CASE WHEN DATE(created_at) = CURDATE() THEN ${total_num} END), 0) AS revenueToday,
-      IFNULL(SUM(CASE WHEN YEAR(created_at) = YEAR(CURDATE()) AND MONTH(created_at) = MONTH(CURDATE()) THEN ${total_num} END), 0) AS revenueThisMonth,
-      COUNT(CASE WHEN DATE(created_at) = CURDATE() THEN 1 END) AS newOrders
-    FROM orders;
-  `;
-  db.query(sql, (err, rows) => {
+  const baseDate = (req.query.date || '').trim();
+  const isValidDate = /^\d{4}-\d{2}-\d{2}$/.test(baseDate);
+  let sql;
+  let params = [];
+  if (isValidDate) {
+    sql = `
+      SELECT
+        IFNULL(SUM(CASE WHEN DATE(created_at) = ? THEN ${total_num} END), 0) AS revenueToday,
+        IFNULL(SUM(CASE WHEN DATE(created_at) = DATE_SUB(?, INTERVAL 1 DAY) THEN ${total_num} END), 0) AS revenueYesterday,
+        IFNULL(SUM(CASE WHEN YEAR(created_at) = YEAR(?) AND MONTH(created_at) = MONTH(?) THEN ${total_num} END), 0) AS revenueThisMonth,
+        COUNT(CASE WHEN DATE(created_at) = ? THEN 1 END) AS ordersToday,
+        COUNT(CASE WHEN DATE(created_at) = DATE_SUB(?, INTERVAL 1 DAY) THEN 1 END) AS ordersYesterday
+      FROM orders;
+    `;
+    params = [baseDate, baseDate, baseDate, baseDate, baseDate, baseDate];
+  } else {
+    sql = `
+      SELECT
+        IFNULL(SUM(CASE WHEN DATE(created_at) = CURDATE() THEN ${total_num} END), 0) AS revenueToday,
+        IFNULL(SUM(CASE WHEN DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) THEN ${total_num} END), 0) AS revenueYesterday,
+        IFNULL(SUM(CASE WHEN YEAR(created_at) = YEAR(CURDATE()) AND MONTH(created_at) = MONTH(CURDATE()) THEN ${total_num} END), 0) AS revenueThisMonth,
+        COUNT(CASE WHEN DATE(created_at) = CURDATE() THEN 1 END) AS ordersToday,
+        COUNT(CASE WHEN DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) THEN 1 END) AS ordersYesterday
+      FROM orders;
+    `;
+  }
+  db.query(sql, params, (err, rows) => {
     if (err) {
       console.error('Metrics orders error:', err);
       return res.status(500).json({ message: 'Internal server error' });
     }
-    const ordersAgg = rows && rows[0] ? rows[0] : { revenueToday: 0, revenueThisMonth: 0, newOrders: 0 };
+    const ordersAgg = rows && rows[0] ? rows[0] : { revenueToday: 0, revenueYesterday: 0, revenueThisMonth: 0, ordersToday: 0, ordersYesterday: 0 };
     const lowStockSql = 'SELECT COUNT(*) AS c FROM product WHERE stock <= 5';
     db.query(lowStockSql, (e2, r2) => {
       if (e2) {
@@ -1045,19 +1325,37 @@ app.get('/admin/metrics', authenticateAdmin, (req, res) => {
         return res.status(500).json({ message: 'Internal server error' });
       }
       const lowStockCount = r2 && r2[0] ? r2[0].c : 0;
-      const newCustomersSql = 'SELECT COUNT(*) AS c FROM user WHERE DATE(created_at) = CURDATE()';
-      db.query(newCustomersSql, (e3, r3) => {
+      let newCustomersSql;
+      let userParams = [];
+      if (isValidDate) {
+        newCustomersSql = `
+          SELECT
+            COUNT(CASE WHEN created_at >= DATE_SUB(?, INTERVAL 6 DAY) AND created_at < DATE_ADD(?, INTERVAL 1 DAY) THEN 1 END) AS new7,
+            COUNT(CASE WHEN created_at >= DATE_SUB(?, INTERVAL 13 DAY) AND created_at < DATE_SUB(?, INTERVAL 6 DAY) THEN 1 END) AS prev7
+          FROM user`;
+        userParams = [baseDate, baseDate, baseDate, baseDate];
+      } else {
+        newCustomersSql = `
+          SELECT
+            COUNT(CASE WHEN created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY) THEN 1 END) AS new7,
+            COUNT(CASE WHEN created_at >= DATE_SUB(CURDATE(), INTERVAL 13 DAY) AND created_at < DATE_SUB(CURDATE(), INTERVAL 6 DAY) THEN 1 END) AS prev7
+          FROM user`;
+      }
+      db.query(newCustomersSql, userParams, (e3, r3) => {
         if (e3) {
           console.error('Metrics users error:', e3);
           return res.status(500).json({ message: 'Internal server error' });
         }
-        const newCustomers = r3 && r3[0] ? r3[0].c : 0;
+        const uRow = r3 && r3[0] ? r3[0] : { new7: 0, prev7: 0 };
         res.json({
           revenueToday: Number(ordersAgg.revenueToday) || 0,
+          revenueYesterday: Number(ordersAgg.revenueYesterday) || 0,
           revenueThisMonth: Number(ordersAgg.revenueThisMonth) || 0,
-          newOrders: Number(ordersAgg.newOrders) || 0,
+          ordersToday: Number(ordersAgg.ordersToday) || 0,
+          ordersYesterday: Number(ordersAgg.ordersYesterday) || 0,
           lowStockCount: Number(lowStockCount) || 0,
-          newCustomers: Number(newCustomers) || 0,
+          newCustomers7: Number(uRow.new7) || 0,
+          newCustomersPrev7: Number(uRow.prev7) || 0,
         });
       });
     });
@@ -1143,25 +1441,71 @@ app.get('/admin/charts/revenue-by-week', authenticateAdmin, (req, res) => {
   });
 });
 
-// Admin Dashboard: Revenue by category (name keyword based)
+// Admin Dashboard: Revenue by category (hỗ trợ filter theo số ngày gần nhất)
 app.get('/admin/charts/revenue-by-category', authenticateAdmin, (req, res) => {
-  const sql = 'SELECT name, price, sold FROM product';
-  db.query(sql, (err, rows) => {
-    if (err) {
-      console.error('Revenue by category error:', err);
-      return res.status(500).json({ message: 'Internal server error' });
-    }
-    const agg = { 'Fiction': 0, 'Non-Fiction': 0, 'Science': 0 };
-    rows.forEach(p => {
-      const name = String(p.name || '').toLowerCase();
-      const revenue = (Number(p.price) || 0) * (Number(p.sold) || 0);
-      let cat = 'Non-Fiction';
-      if (/(khoa học|science|vật lý|hóa|sinh)/.test(name)) cat = 'Science';
-      if (/(tiểu thuyết|novel|truyện|fiction)/.test(name)) cat = 'Fiction';
-      agg[cat] += revenue;
+  const days = Math.max(0, Number(req.query.days) || 0);
+  if (days > 0) {
+    // Tính doanh thu theo đơn hàng trong N ngày gần nhất
+    const prodSql = 'SELECT p.id, p.price, c.name AS category_name FROM product p LEFT JOIN category c ON p.category_id = c.id';
+    db.query(prodSql, (pErr, prodRows) => {
+      if (pErr) {
+        console.error('Revenue by category product map error:', pErr);
+        return res.status(500).json({ message: 'Internal server error' });
+      }
+      const prodMap = new Map((prodRows || []).map(r => [Number(r.id), r]));
+      const orderSql = 'SELECT cartItems FROM orders WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)';
+      db.query(orderSql, [days], (oErr, orders) => {
+        if (oErr) {
+          console.error('Revenue by category orders error:', oErr);
+          return res.status(500).json({ message: 'Internal server error' });
+        }
+        const agg = new Map();
+        (orders || []).forEach(row => {
+          let items = [];
+          try {
+            items = JSON.parse(row.cartItems || '[]');
+          } catch (_) { items = []; }
+          if (!Array.isArray(items)) return;
+          items.forEach(it => {
+            const id = Number(it.id) || 0;
+            const qty = Number(it.quantity) || 0;
+            if (!id || !qty) return;
+            const prod = prodMap.get(id);
+            const catName = (prod && prod.category_name) ? prod.category_name : 'Chưa phân loại';
+            let price = prod && prod.price != null ? Number(prod.price) || 0 : 0;
+            if (!price && it.price != null) price = parseVNDValue(it.price);
+            const revenue = price * qty;
+            agg.set(catName, (agg.get(catName) || 0) + revenue);
+          });
+        });
+        const entries = Array.from(agg.entries()).sort((a,b)=> b[1]-a[1]).slice(0,5);
+        const labels = entries.map(([name]) => name || 'Chưa phân loại');
+        const data = entries.map(([,value]) => Number(value) || 0);
+        res.json({ labels, data });
+      });
     });
-    res.json({ labels: Object.keys(agg), data: Object.values(agg) });
-  });
+  } else {
+    // Tổng theo toàn bộ dữ liệu bán ra
+    const sql = `
+      SELECT 
+        COALESCE(c.name, 'Chưa phân loại') AS category_name,
+        SUM(p.price * IFNULL(p.sold, 0)) AS revenue
+      FROM product p
+      LEFT JOIN category c ON p.category_id = c.id
+      GROUP BY c.id, category_name
+      ORDER BY revenue DESC
+      LIMIT 5
+    `;
+    db.query(sql, (err, rows) => {
+      if (err) {
+        console.error('Revenue by category error:', err);
+        return res.status(500).json({ message: 'Internal server error' });
+      }
+      const labels = (rows || []).map(r => r.category_name || 'Chưa phân loại');
+      const data = (rows || []).map(r => Number(r.revenue) || 0);
+      res.json({ labels, data });
+    });
+  }
 });
 
 // Admin Dashboard: Best sellers
@@ -1238,6 +1582,41 @@ const data = (rows || []).map(r => Number(r.revenue) || 0);
 // Đảo ngược để hiển thị từ cũ đến mới (trái sang phải)
 res.json({ by, labels: labels.reverse(), data: data.reverse() });
 });
+});
+
+app.get('/admin/charts/orders', authenticateAdmin, (req, res) => {
+  const by = (req.query.by || 'month').toLowerCase();
+  let labelExpr;
+  let displayLabelExpr = null;
+  if (by === 'day') {
+    labelExpr = 'DATE(created_at)';
+    displayLabelExpr = "DATE_FORMAT(created_at, '%d/%m/%Y')";
+  } else if (by === 'week') {
+    labelExpr = 'YEARWEEK(created_at, 1)';
+    displayLabelExpr = "CONCAT('Tuần ', DATE_FORMAT(created_at, '%u/%Y'))";
+  } else if (by === 'year') {
+    labelExpr = 'YEAR(created_at)';
+    displayLabelExpr = 'YEAR(created_at)';
+  } else {
+    // month
+    labelExpr = "DATE_FORMAT(created_at, '%Y-%m')";
+    displayLabelExpr = labelExpr;
+  }
+  const sql = `SELECT ${labelExpr} AS label, ${displayLabelExpr || labelExpr} AS display_label, COUNT(*) AS total_orders
+    FROM orders 
+    WHERE created_at IS NOT NULL
+    GROUP BY ${labelExpr}
+    ORDER BY ${labelExpr} DESC
+    LIMIT 30`;
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error('Orders chart error:', err);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+    const labels = (rows || []).map(r => String(r.display_label || r.label || ''));
+    const data = (rows || []).map(r => Number(r.total_orders) || 0);
+    res.json({ by, labels: labels.reverse(), data: data.reverse() });
+  });
 });
 
 // Admin: Customers list
@@ -1581,8 +1960,9 @@ app.get('/admin/products', authenticateAdmin, (req, res) => {
   const alter1 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS category_id INT NULL';
   const alter2 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS publisher_id INT NULL';
   const alter3 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS author_id INT NULL';
-  db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => {
-    const sql = 'SELECT p.id, p.name, p.price, p.description, p.img, p.stock, p.sold, p.rating, p.category_id, c.name AS category_name, p.publisher_id, pub.name AS publisher_name, p.author_id, auth.name AS author_name FROM product p LEFT JOIN category c ON p.category_id = c.id LEFT JOIN party pub ON p.publisher_id = pub.id LEFT JOIN party auth ON p.author_id = auth.id ORDER BY p.id DESC';
+  const alter4 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS is_flashsale TINYINT(1) DEFAULT 0';
+  db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => db.query(alter4, () => {
+    const sql = 'SELECT p.id, p.name, p.price, p.description, p.img, p.stock, p.sold, p.rating, p.category_id, c.name AS category_name, p.publisher_id, pub.name AS publisher_name, p.author_id, auth.name AS author_name, p.discount, p.oldPrice, p.is_flashsale, p.isNew FROM product p LEFT JOIN category c ON p.category_id = c.id LEFT JOIN party pub ON p.publisher_id = pub.id LEFT JOIN party auth ON p.author_id = auth.id ORDER BY p.id DESC';
     db.query(sql, (err, rows) => {
       if (err) {
         console.error('Admin products list error:', err);
@@ -1590,43 +1970,161 @@ app.get('/admin/products', authenticateAdmin, (req, res) => {
       }
       res.json(rows || []);
     });
-  })));
+  }))));
 });
 
 app.post('/admin/products', authenticateAdmin, (req, res) => {
-  const { name, price, description, img, stock, category_id, publisher_id, author_id } = req.body || {};
+  const { name, price, description, img, stock, category_id, publisher_id, author_id, publisher, author, discount, oldPrice, is_flashsale, isNew } = req.body || {};
+  console.log('[POST /admin/products] Received data:', { name, price, description, img, stock, category_id, publisher_id, author_id, publisher, author });
   if (!name || price == null) return res.status(400).json({ message: 'name and price are required' });
   const alter1 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS category_id INT NULL';
   const alter2 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS publisher_id INT NULL';
   const alter3 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS author_id INT NULL';
-  db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => {
-    const sql = 'INSERT INTO product (name, price, description, img, stock, category_id, publisher_id, author_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
-    db.query(sql, [name, Number(price)||0, description||'', img||'', Number(stock)||0, category_id || null, publisher_id || null, author_id || null], (err, result) => {
-      if (err) {
-        console.error('Admin product create error:', err);
-        return res.status(500).json({ message: 'Internal server error' });
-      }
-      res.status(201).json({ id: result.insertId, name, price: Number(price)||0, description: description||'', img: img||'', stock: Number(stock)||0, category_id: category_id||null, publisher_id: publisher_id||null, author_id: author_id||null });
+  const alter4 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS is_flashsale TINYINT(1) DEFAULT 0';
+  db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => db.query(alter4, () => {
+    // Lấy tên author và publisher từ bảng party nếu có ID
+    const promises = [];
+    let authorName = author || null;
+    let publisherName = publisher || null;
+    
+    if (author_id && !author) {
+      promises.push(new Promise((resolve) => {
+        db.query('SELECT name FROM party WHERE id = ? AND type = "author"', [author_id], (err, rows) => {
+          if (!err && rows && rows.length > 0) authorName = rows[0].name;
+          resolve();
+        });
+      }));
+    }
+    
+    if (publisher_id && !publisher) {
+      promises.push(new Promise((resolve) => {
+        db.query('SELECT name FROM party WHERE id = ? AND type = "publisher"', [publisher_id], (err, rows) => {
+          if (!err && rows && rows.length > 0) publisherName = rows[0].name;
+          resolve();
+        });
+      }));
+    }
+    
+    Promise.all(promises).then(() => {
+      const sql = 'INSERT INTO product (name, price, description, img, stock, category_id, publisher_id, author_id, publisher, author, discount, oldPrice, is_flashsale, isNew) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      console.log('[POST /admin/products] Executing INSERT with values:', [name, Number(price)||0, description||'', img||'', Number(stock)||0]);
+      db.query(sql, [
+        name, 
+        Number(price)||0, 
+        description||'', 
+        img||'', 
+        Number(stock)||0, 
+        category_id || null, 
+        publisher_id || null, 
+        author_id || null,
+        publisherName,
+        authorName,
+        discount !== undefined ? (Number(discount) || null) : null,
+        oldPrice !== undefined ? (Number(oldPrice) || null) : null,
+        is_flashsale !== undefined ? (is_flashsale ? 1 : 0) : 0,
+        isNew !== undefined ? (isNew ? 1 : 0) : 0
+      ], (err, result) => {
+        if (err) {
+          console.error('Admin product create error:', err);
+          return res.status(500).json({ message: 'Internal server error' });
+        }
+        console.log('[POST /admin/products] Product created with ID:', result.insertId);
+        res.status(201).json({ 
+          id: result.insertId, 
+          name, 
+          price: Number(price)||0, 
+          description: description||'', 
+          img: img||'',
+          stock: Number(stock)||0, 
+          category_id: category_id||null, 
+          publisher_id: publisher_id||null, 
+          author_id: author_id||null,
+          publisher: publisherName,
+          author: authorName,
+          discount: discount !== undefined ? (Number(discount) || null) : null,
+          oldPrice: oldPrice !== undefined ? (Number(oldPrice) || null) : null,
+          is_flashsale: is_flashsale !== undefined ? (is_flashsale ? 1 : 0) : 0,
+          isNew: isNew !== undefined ? (isNew ? 1 : 0) : 0
+        });
+      });
     });
-  })));
+  }))));
 });
 
 app.put('/admin/products/:id', authenticateAdmin, (req, res) => {
   const id = Number(req.params.id);
-  const { name, price, description, img, stock, category_id, publisher_id, author_id } = req.body || {};
+  const { name, price, description, img, stock, category_id, publisher_id, author_id, discount, oldPrice, is_flashsale, isNew, author, publisher } = req.body || {};
   const alter1 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS category_id INT NULL';
   const alter2 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS publisher_id INT NULL';
   const alter3 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS author_id INT NULL';
-  db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => {
-    const sql = 'UPDATE product SET name = ?, price = ?, description = ?, img = ?, stock = ?, category_id = ?, publisher_id = ?, author_id = ? WHERE id = ?';
-    db.query(sql, [name, Number(price)||0, description||'', img||'', Number(stock)||0, category_id || null, publisher_id || null, author_id || null, id], (err) => {
-      if (err) {
-        console.error('Admin product update error:', err);
-        return res.status(500).json({ message: 'Internal server error' });
-      }
-      res.json({ id, name, price: Number(price)||0, description: description||'', img: img||'', stock: Number(stock)||0, category_id: category_id||null, publisher_id: publisher_id||null, author_id: author_id||null });
+  const alter4 = 'ALTER TABLE product ADD COLUMN IF NOT EXISTS is_flashsale TINYINT(1) DEFAULT 0';
+  db.query(alter1, () => db.query(alter2, () => db.query(alter3, () => db.query(alter4, () => {
+    // Lấy tên author và publisher từ bảng party nếu có ID
+    const promises = [];
+    let authorName = author || null;
+    let publisherName = publisher || null;
+    
+    if (author_id && !author) {
+      promises.push(new Promise((resolve) => {
+        db.query('SELECT name FROM party WHERE id = ? AND type = "author"', [author_id], (err, rows) => {
+          if (!err && rows && rows.length > 0) authorName = rows[0].name;
+          resolve();
+        });
+      }));
+    }
+    
+    if (publisher_id && !publisher) {
+      promises.push(new Promise((resolve) => {
+        db.query('SELECT name FROM party WHERE id = ? AND type = "publisher"', [publisher_id], (err, rows) => {
+          if (!err && rows && rows.length > 0) publisherName = rows[0].name;
+          resolve();
+        });
+      }));
+    }
+    
+    Promise.all(promises).then(() => {
+      const sql = 'UPDATE product SET name = ?, price = ?, description = ?, img = ?, stock = ?, category_id = ?, publisher_id = ?, author_id = ?, discount = ?, oldPrice = ?, is_flashsale = ?, isNew = ?, author = ?, publisher = ? WHERE id = ?';
+      db.query(sql, [
+        name, 
+        Number(price)||0, 
+        description||'', 
+        img||'', 
+        Number(stock)||0, 
+        category_id || null, 
+        publisher_id || null, 
+        author_id || null,
+        discount !== undefined ? (Number(discount) || null) : null,
+        oldPrice !== undefined ? (Number(oldPrice) || null) : null,
+        is_flashsale !== undefined ? (is_flashsale ? 1 : 0) : 0,
+        isNew !== undefined ? (isNew ? 1 : 0) : 0,
+        authorName,
+        publisherName,
+        id
+      ], (err) => {
+        if (err) {
+          console.error('Admin product update error:', err);
+          return res.status(500).json({ message: 'Internal server error' });
+        }
+        res.json({ 
+          id, 
+          name, 
+          price: Number(price)||0, 
+          description: description||'', 
+          img: img||'', 
+          stock: Number(stock)||0, 
+          category_id: category_id||null, 
+          publisher_id: publisher_id||null, 
+          author_id: author_id||null,
+          discount: discount !== undefined ? (Number(discount) || null) : null,
+          oldPrice: oldPrice !== undefined ? (Number(oldPrice) || null) : null,
+          is_flashsale: is_flashsale !== undefined ? (is_flashsale ? 1 : 0) : 0,
+          isNew: isNew !== undefined ? (isNew ? 1 : 0) : 0,
+          author: authorName,
+          publisher: publisherName
+        });
+      });
     });
-  })));
+  }))));
 });
 
 app.delete('/admin/products/:id', authenticateAdmin, (req, res) => {
@@ -1674,6 +2172,24 @@ function ensureCategoryTable(cb){
   const createSql = 'CREATE TABLE IF NOT EXISTS category (\n    id INT AUTO_INCREMENT PRIMARY KEY,\n    name VARCHAR(255) NOT NULL,\n    description TEXT,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n  )';
   db.query(createSql, cb);
 }
+
+// Public API: Get all categories
+app.get('/api/categories', (req, res) => {
+  ensureCategoryTable((err) => {
+    if (err) {
+      console.error('Ensure category table error:', err);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+    const sql = 'SELECT id, name, description FROM category ORDER BY name ASC';
+    db.query(sql, (err2, rows) => {
+      if (err2) {
+        console.error('Categories list error:', err2);
+        return res.status(500).json({ message: 'Internal server error' });
+      }
+      res.json(rows || []);
+    });
+  });
+});
 
 app.get('/admin/categories', authenticateAdmin, (req, res) => {
   ensureCategoryTable((err)=>{
@@ -1872,7 +2388,17 @@ app.patch('/admin/orders/:id/status', authenticateAdmin, (req, res) => {
 // Low stock top N
 app.get('/admin/stats/low-stock', authenticateAdmin, (req, res) => {
   const limit = Math.max(1, Math.min(20, Number(req.query.limit)||5));
-  const sql = 'SELECT id, name, stock, sold FROM product ORDER BY stock ASC, sold DESC LIMIT ?';
+  const sql = `
+    SELECT 
+      p.id,
+      p.name,
+      p.stock,
+      p.sold,
+      c.name AS category_name
+    FROM product p
+    LEFT JOIN category c ON p.category_id = c.id
+    ORDER BY p.stock ASC, p.sold DESC
+    LIMIT ?`;
   db.query(sql, [limit], (err, rows) => {
     if (err) { console.error('Low stock query error:', err); return res.status(500).json({ message: 'Internal server error' }); }
     res.json(rows || []);
@@ -2190,6 +2716,9 @@ app.get('/api/my-vouchers', authenticateUser, (req, res) => {
       FROM user_vouchers uv
       JOIN vouchers v ON uv.voucher_id = v.id
       WHERE uv.user_id = ?
+        AND v.is_active = TRUE
+        AND uv.is_used = FALSE
+        AND (v.end_date IS NULL OR v.end_date >= NOW())
       ORDER BY uv.received_at DESC`;
     db.query(sql, [userId], (listErr, rows) => {
       if (listErr) {
@@ -2285,7 +2814,8 @@ app.post('/api/vouchers/validate', (req, res) => {
   if (!code || typeof code !== 'string') {
     return res.status(400).json({ message: 'Mã voucher không hợp lệ' });
   }
-  ensureVouchersTable((err) => {
+  const userId = getUserIdFromAuth(req);
+  ensureVoucherInfra((err) => {
     if (err) {
       console.error('Ensure vouchers error:', err);
       return res.status(500).json({ message: 'Internal server error' });
@@ -2305,13 +2835,39 @@ app.post('/api/vouchers/validate', (req, res) => {
       if (voucher.usage_limit !== null && voucher.used_count >= voucher.usage_limit) {
         return res.status(400).json({ message: 'Mã voucher đã hết lượt sử dụng' });
       }
-      res.json({
-        code: voucher.code,
-        discount_type: voucher.discount_type,
-        discount_value: Number(voucher.discount_value),
-        min_order_amount: Number(voucher.min_order_amount || 0),
-        max_discount: voucher.max_discount ? Number(voucher.max_discount) : null
-      });
+      
+      // Kiểm tra user đã dùng voucher này chưa
+      if (userId) {
+        const checkUsedSql = 'SELECT id, is_used FROM user_vouchers WHERE user_id = ? AND voucher_id = ? LIMIT 1';
+        db.query(checkUsedSql, [userId, voucher.id], (uvErr, uvRows) => {
+          if (uvErr) {
+            console.error('Check user voucher error:', uvErr);
+          }
+          if (uvRows && uvRows.length > 0 && uvRows[0].is_used) {
+            return res.status(400).json({ message: 'Bạn đã sử dụng voucher này rồi' });
+          }
+          
+          res.json({
+            code: voucher.code,
+            discount_type: voucher.discount_type,
+            discount_value: Number(voucher.discount_value),
+            min_order_amount: Number(voucher.min_order_amount || 0),
+            max_discount: voucher.max_discount ? Number(voucher.max_discount) : null,
+            user_voucher_id: uvRows && uvRows.length > 0 ? uvRows[0].id : null,
+            already_claimed: uvRows && uvRows.length > 0
+          });
+        });
+      } else {
+        res.json({
+          code: voucher.code,
+          discount_type: voucher.discount_type,
+          discount_value: Number(voucher.discount_value),
+          min_order_amount: Number(voucher.min_order_amount || 0),
+          max_discount: voucher.max_discount ? Number(voucher.max_discount) : null,
+          user_voucher_id: null,
+          already_claimed: false
+        });
+      }
     });
   });
 });
@@ -2382,6 +2938,735 @@ app.post('/admin/vouchers', authenticateAdmin, (req, res) => {
       res.json({ message: 'Voucher đã được lưu thành công', id: result.insertId });
     });
   });
+});
+
+// ===== CHATBOT AI ENDPOINT =====
+// POST /api/chatbot - Chat with AI assistant
+app.post('/api/chatbot', async (req, res) => {
+  try {
+    const { message, conversationHistory = [] } = req.body;
+
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Session ID for saving to database
+    const sessionId = req.body.sessionId || req.query.sessionId || null;
+    let convIdForSave = null;
+    
+    // Find or prepare conversation ID for saving
+    if (sessionId) {
+      try {
+        const convRows = await new Promise((resolve, reject) => {
+          db.query('SELECT id FROM conversations WHERE session_id = ? LIMIT 1', [sessionId], (e, r) => e ? reject(e) : resolve(r));
+        });
+        if (Array.isArray(convRows) && convRows.length > 0) {
+          convIdForSave = convRows[0].id;
+        }
+      } catch (e) {
+        console.error('Error finding conversation:', e);
+      }
+    }
+    
+    // Save user message to DB
+    if (convIdForSave) {
+      db.query('INSERT INTO chat_messages (conversation_id, role, content) VALUES (?, ?, ?)', [convIdForSave, 'user', message], (ie) => {
+        if (ie) console.error('Error saving user message to DB:', ie);
+      });
+    }
+
+    // Check if any AI API key is configured (OpenRouter or OpenAI)
+    const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
+    const hasOpenAI = !!process.env.OPENAI_API_KEY;
+    
+    if (!hasOpenRouter && !hasOpenAI) {
+      // Fallback: Return rule-based response nếu không có API key
+      const fallbackResponse = await getFallbackResponse(message);
+      
+      // Save bot response to DB
+      if (convIdForSave) {
+        const textToSave = typeof fallbackResponse === 'object' ? fallbackResponse.text : fallbackResponse;
+        db.query('INSERT INTO chat_messages (conversation_id, role, content) VALUES (?, ?, ?)', [convIdForSave, 'assistant', textToSave], (ie) => {
+          if (ie) console.error('Error saving assistant message to DB:', ie);
+        });
+      }
+      
+      return res.json({ 
+        response: typeof fallbackResponse === 'object' ? fallbackResponse.text : fallbackResponse,
+        products: typeof fallbackResponse === 'object' ? fallbackResponse.products : [],
+        mode: 'fallback'
+      });
+    }
+
+    // Initialize OpenAI client only if using OpenAI (not OpenRouter)
+    let openai;
+    if (hasOpenAI && !hasOpenRouter) {
+      openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    }
+
+    // Get products for context
+    const products = await new Promise((resolve, reject) => {
+      db.query('SELECT id, name, price, discount, sold, author, publisher, img, description FROM product ORDER BY sold DESC, id DESC LIMIT 100', 
+        (err, results) => {
+          if (err) reject(err);
+          else resolve(results || []);
+        });
+    });
+
+    // System prompt với thông tin về shop
+    const productList = products.map((p, idx) => 
+      `${idx+1}. "${p.name}" - ${p.author || 'Tác giả không rõ'} - ${Number(p.price||0).toLocaleString('vi-VN')}đ${p.discount ? ` (giảm ${p.discount}%)` : ''}`
+    ).join('\n');
+    
+    const systemPrompt = `Bạn là trợ lý ảo THÔNG MINH của Shop Bán Sách.
+
+THÔNG TIN SHOP:
+- Hotline: 0123-456-789
+- Freeship đơn từ 200.000₫
+- Giảm 15% cho khách mới
+
+╔═══════════════════════════════════════════════════════╗
+║   DANH SÁCH TẤT CẢ SÁCH CÓ SẴN TRONG SHOP (${products.length} cuốn)   ║
+╚═══════════════════════════════════════════════════════╝
+${productList}
+╔═══════════════════════════════════════════════════════╗
+║              HẾT DANH SÁCH - KHÔNG CÓ SÁCH NÀO KHÁC           ║
+╚═══════════════════════════════════════════════════════╝
+
+🚨 QUY TẮC BẮT BUỘC - TUYỆT ĐỐI KHÔNG VI PHẠM:
+═══════════════════════════════════════════════════════════
+
+1. ❌ NGHIÊM CẤM tự bịa thêm sách NGOÀI danh sách trên
+2. ❌ NGHIÊM CẤM nói về sách không có ID trong danh sách
+3. ✅ CHỈ giới thiệu sách CÓ TRONG DANH SÁCH với ID, tên, giá CHÍNH XÁC
+4. ✅ Nếu KHÔNG TÌM THẤY sách phù hợp → Nói thật: "Shop mình chưa có loại sách này"
+5. 🎯 KHI HỎI THỂ LOẠI: Chỉ lọc sách có [Thể loại] KHỚP CHÍNH XÁC với yêu cầu
+
+📖 CÁCH XỬ LÝ CÂU HỎI VỀ THỂ LOẠI:
+• VD: "Gợi ý manga" hoặc "Sách manga nào hay?"
+  → CHỈ TÌM sách có [Manga - Comic] trong danh sách
+  → ❌ KHÔNG giới thiệu [Ngôn tình], [Kỹ năng sống], v.v.
+  → Nếu KHÔNG CÓ: "Shop chưa có sách manga ạ 😅"
+
+• VD: "Sách kỹ năng sống"
+  → CHỈ TÌM sách có [Kỹ năng sống] 
+  → ❌ KHÔNG giới thiệu manga hay ngôn tình
+
+• VD: "Sách lập trình"
+  → CHỈ TÌM sách có [Lập trình] hoặc [Công nghệ]
+  → Nếu không có: "Shop chưa có sách lập trình ạ"
+
+• Khách hỏi câu KHÔNG liên quan sách:
+  → Từ chối lịch sự: "Mình chỉ tư vấn về sách thôi ạ 😊"
+
+💬 CÁCH TRẢ LỜI:
+- TIẾNG VIỆT tự nhiên, thân thiện
+- NGẮN GỌN (2-4 câu)
+- Emoji vừa phải (1-2 emoji/câu)
+- ⚠️ BẮT BUỘC: Khi giới thiệu sách, PHẢI ghi "ID: [số]" để hệ thống hiển thị card sản phẩm
+- Format: "Tên sách (ID: 123) - Giá xxx₫"
+
+✅ VÍ DỤ ĐÚNG:
+Hỏi: "Gợi ý sách ngôn tình"
+→ "Mình có mấy cuốn ngôn tình hay nè:
+• Ương Ngạnh - Tập 2 (ID: 45) - 159.000₫ 💕
+• All In Love (ID: 67) - 95.000₫ 🌸"
+
+Hỏi: "Gợi ý manga"
+→ Tìm sách có [Manga - Comic]: "Có Thám Tử Lừng Danh Conan (ID: 12) giá 159.000₫! 🔍"
+→ Nếu KHÔNG CÓ [Manga - Comic]: "Shop chưa có manga ạ 😅"
+
+❌ VÍ DỤ SAI:
+Hỏi: "Gợi ý manga"
+→ SAI: Giới thiệu sách [Ngôn tình] hay [Kỹ năng sống]
+→ ĐÚNG: Chỉ giới thiệu sách có [Manga - Comic] hoặc nói "chưa có"
+
+NHỚ: Chỉ dùng thông tin từ ${products.length} cuốn sách trong DANH SÁCH BÊN TRÊN và LỌC ĐÚNG THỂ LOẠI!`;
+
+
+    // Optionally load conversation history from DB when sessionId provided,
+    // then merge with any conversationHistory sent by client and keep the last 6 entries.
+    let dbHistory = [];
+    if (sessionId) {
+      try {
+        const convRows = await new Promise((resolve, reject) => {
+          db.query('SELECT id FROM conversations WHERE session_id = ? LIMIT 1', [sessionId], (e, r) => e ? reject(e) : resolve(r));
+        });
+        if (Array.isArray(convRows) && convRows.length > 0) {
+          const convId = convRows[0].id;
+          const msgRows = await new Promise((resolve, reject) => {
+            db.query('SELECT role, content, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id ASC', [convId], (e, r) => e ? reject(e) : resolve(r));
+          });
+          if (Array.isArray(msgRows)) {
+            dbHistory = msgRows.map(m => ({ role: (m.role || 'user'), content: m.content }));
+          }
+        }
+      } catch (dbErr) {
+        console.error('Error loading conversation from DB:', dbErr);
+        // don't fail the whole request; fall back to provided conversationHistory only
+        dbHistory = [];
+      }
+    }
+
+    const mergedHistory = [
+      ...dbHistory,
+      ...(Array.isArray(conversationHistory) ? conversationHistory : [])
+    ].slice(-6);
+
+    // Build messages array for OpenAI
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...mergedHistory,
+      { role: 'user', content: message }
+    ];
+
+    // Decide provider: OpenRouter if key present, otherwise use OpenAI SDK
+    let aiResponse = '';
+    if (process.env.OPENROUTER_API_KEY) {
+      try {
+        const routerModel = process.env.OPENROUTER_MODEL || 'gpt-4o-mini';
+        const payload = { 
+          model: routerModel, 
+          messages: messages, 
+          temperature: 0.6,  // Hạ nhẹ để trả lời ổn định và ít ảo tưởng
+          max_tokens: 1000,  // Cho phép trả lời đầy đủ hơn khi cần
+          top_p: 0.95,       // Giữ top_p cao để cân bằng
+          frequency_penalty: 0.3,  // Tránh lặp lại
+          presence_penalty: 0.3    // Khuyến khích nội dung mới
+        };
+        
+        console.log('🤖 Calling OpenRouter with model:', routerModel);
+        
+        const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'http://localhost:5000',
+            'X-Title': 'Shop Bán Sách'
+          },
+          body: JSON.stringify(payload)
+        });
+        
+        const data = await resp.json();
+        console.log('📥 OpenRouter response status:', resp.status);
+        console.log('📥 OpenRouter response data:', JSON.stringify(data, null, 2));
+        
+        // Check for errors in response
+        if (data.error) {
+          console.error('❌ OpenRouter API error:', data.error);
+          throw new Error(data.error.message || 'OpenRouter API error');
+        }
+        
+        // Extract AI response
+        if (data && data.choices && data.choices[0] && data.choices[0].message) {
+          aiResponse = data.choices[0].message.content;
+        } else {
+          console.error('Unexpected OpenRouter response format:', data);
+          throw new Error('Invalid response format from OpenRouter');
+        }
+      } catch (e) {
+        console.error('OpenRouter call error:', e);
+        throw e;
+      }
+    } else {
+      const completion = await openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
+        messages: messages,
+        temperature: 0.6,
+        max_tokens: 800,
+      });
+      aiResponse = completion.choices[0].message.content;
+    }
+
+    // Save assistant reply to DB as well (if conversation exists)
+    if (convIdForSave) {
+      db.query('INSERT INTO chat_messages (conversation_id, role, content) VALUES (?, ?, ?)', [convIdForSave, 'assistant', aiResponse], (ie) => {
+        if (ie) console.error('Error saving assistant message to DB:', ie);
+      });
+    }
+
+    // 🎯 TÌM VÀ TRẢ VỀ PRODUCTS từ database dựa trên AI response
+    let recommendedProducts = [];
+    
+    // Extract product IDs từ AI response (tìm "ID: 123" hoặc "id: 123")
+    const idMatches = aiResponse.match(/\b(?:ID|id):\s*(\d+)/gi);
+    if (idMatches && idMatches.length > 0) {
+      const ids = idMatches.map(m => parseInt(m.match(/\d+/)[0])).filter(id => !isNaN(id));
+      
+      if (ids.length > 0) {
+        try {
+          recommendedProducts = await new Promise((resolve, reject) => {
+            const placeholders = ids.map(() => '?').join(',');
+            db.query(
+              `SELECT id, name, price, discount, author, img FROM product WHERE id IN (${placeholders}) LIMIT 8`,
+              ids,
+              (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+              }
+            );
+          });
+          console.log('✅ Found products from AI response:', recommendedProducts.length);
+        } catch (err) {
+          console.error('Error fetching products by IDs:', err);
+        }
+      }
+    }
+    
+    // Nếu AI không đề cập ID cụ thể, thử tìm theo từ khóa trong message
+    if (recommendedProducts.length === 0) {
+      const lowerMessage = message.toLowerCase();
+      const categoryMap = {
+        'ngôn tình': ['ngôn tình', 'tình cảm', 'lãng mạn', 'romance'],
+        'lập trình': ['lập trình', 'code', 'javascript', 'python', 'react', 'node'],
+        'văn học': ['văn học', 'tiểu thuyết', 'truyện'],
+        'kinh tế': ['kinh tế', 'business', 'kinh doanh'],
+      };
+      
+      for (const [category, keywords] of Object.entries(categoryMap)) {
+        for (const keyword of keywords) {
+          if (lowerMessage.includes(keyword)) {
+            try {
+              const searchTerms = keywords.map(k => `%${k}%`);
+              const placeholders = keywords.map(() => '(name LIKE ? OR author LIKE ? OR description LIKE ?)').join(' OR ');
+              const params = searchTerms.flatMap(term => [term, term, term]);
+              
+              recommendedProducts = await new Promise((resolve, reject) => {
+                db.query(
+                  `SELECT id, name, price, discount, author, img FROM product WHERE ${placeholders} LIMIT 5`,
+                  params,
+                  (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows || []);
+                  }
+                );
+              });
+              console.log(`✅ Found ${recommendedProducts.length} products for category: ${category}`);
+              break;
+            } catch (err) {
+              console.error('Error searching products:', err);
+            }
+          }
+        }
+        if (recommendedProducts.length > 0) break;
+      }
+    }
+
+    res.json({ 
+      response: aiResponse, 
+      products: recommendedProducts,
+      mode: 'ai' 
+    });
+
+  } catch (error) {
+    console.error('Chatbot error:', error);
+    
+    // Fallback nếu có lỗi
+    const fallbackResponse = await getFallbackResponse(req.body.message || '');
+    res.json({ 
+      response: typeof fallbackResponse === 'object' ? fallbackResponse.text : fallbackResponse,
+      products: typeof fallbackResponse === 'object' ? fallbackResponse.products : [],
+      mode: 'fallback',
+      error: error.message
+    });
+  }
+});
+
+// Fallback response function (rule-based with database search)
+async function getFallbackResponse(message) {
+  const lowerMessage = message.toLowerCase();
+  
+  if (lowerMessage.includes('xin chào') || lowerMessage.includes('hi') || lowerMessage.includes('hello') || lowerMessage.includes('chào')) {
+    return {
+      text: 'Xin chào! Rất vui được hỗ trợ bạn. Tôi có thể giúp bạn:\n• Tìm kiếm sách\n• Xem sách bán chạy\n• Giới thiệu khuyến mãi\n• Hỗ trợ mua hàng\n\nBạn cần giúp gì? 📚',
+      products: []
+    };
+  }
+  
+  // KIỂM TRA THỂ LOẠI TRƯỚC (kể cả khi không có từ "tìm", "gợi ý")
+  const categoryMap = {
+    'ngôn tình': ['ngôn tình', 'tình cảm', 'lãng mạn', 'romance', 'yêu', 'love', 'tình yêu'],
+    'lập trình': ['lập trình', 'code', 'coding', 'javascript', 'python', 'java', 'react', 'node', 'web', 'app', 'phát triển'],
+    'văn học': ['văn học', 'tiểu thuyết', 'truyện', 'novel', 'fiction'],
+    'kinh tế': ['kinh tế', 'business', 'kinh doanh', 'tài chính', 'đầu tư', 'marketing'],
+    'kỹ năng': ['kỹ năng', 'skill', 'self-help', 'tự học', 'phát triển bản thân'],
+    'thiếu nhi': ['thiếu nhi', 'trẻ em', 'kids', 'children', 'em bé'],
+    'trinh thám': ['trinh thám', 'detective', 'thám tử', 'mystery'],
+    'kinh dị': ['kinh dị', 'horror', 'ma', 'ghost', 'sợ hãi'],
+    'khoa học': ['khoa học', 'science', 'vật lý', 'hóa học', 'sinh học']
+  };
+  
+  let foundCategory = null;
+  let searchKeywords = [];
+  
+  // Duyệt qua từng category và tìm match
+  for (const [category, keywords] of Object.entries(categoryMap)) {
+    for (const keyword of keywords) {
+      if (lowerMessage.includes(keyword)) {
+        foundCategory = category;
+        searchKeywords = keywords;
+        break;
+      }
+    }
+    if (foundCategory) break;
+  }
+  
+  // Nếu tìm thấy category, tìm kiếm ngay
+  if (foundCategory && searchKeywords.length > 0) {
+    try {
+      const searchTerms = searchKeywords.map(k => `%${k}%`);
+      const placeholders = searchKeywords.map(() => '(name LIKE ? OR author LIKE ? OR description LIKE ?)').join(' OR ');
+      const params = searchTerms.flatMap(term => [term, term, term]);
+      
+      const results = await new Promise((resolve, reject) => {
+        db.query(
+          `SELECT id, name, price, discount, author, img FROM product WHERE ${placeholders} LIMIT 8`,
+          params,
+          (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          }
+        );
+      });
+      
+      if (results.length > 0) {
+        return {
+          text: `Mình tìm thấy ${results.length} cuốn sách ${foundCategory} trong shop:`,
+          products: results
+        };
+      } else {
+        // Không tìm thấy sách với thể loại đó
+        return {
+          text: `Ối, shop mình chưa có sách ${foundCategory} ạ 😅\n\nNhưng mình có nhiều thể loại khác như:\n• 📚 Văn học\n• 💼 Kinh tế\n• 💻 Lập trình\n• 🎯 Kỹ năng\n\nBạn muốn xem thể loại nào không?`,
+          products: []
+        };
+      }
+    } catch (err) {
+      console.error('Database search error:', err);
+    }
+  }
+  
+  // Search for books - TÌM KIẾM THEO TÊN SÁCH
+  if (lowerMessage.includes('tìm') || lowerMessage.includes('có sách') || lowerMessage.includes('sách nào') || lowerMessage.includes('gợi ý') || lowerMessage.includes('giới thiệu') || lowerMessage.includes('muốn đọc')) {
+    try {
+      // TÌM KIẾM THEO TÊN SÁCH CỤ THỂ
+      const words = lowerMessage.split(' ').filter(w => w.length > 2);
+      let searchResults = [];
+      
+      // Nếu có từ dài hơn 3 ký tự, thử tìm kiếm theo tên
+      for (const word of words) {
+        if (word.length > 3 && !['tìm', 'sách', 'có', 'nào', 'gợi', 'giới', 'thiệu', 'kiếm', 'muốn', 'đọc'].includes(word)) {
+          const searchTerm = `%${word}%`;
+          const results = await new Promise((resolve, reject) => {
+            db.query(
+              'SELECT id, name, price, discount, author, img FROM product WHERE name LIKE ? OR author LIKE ? LIMIT 5',
+              [searchTerm, searchTerm],
+              (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+              }
+            );
+          });
+          
+          if (results.length > 0) {
+            searchResults = results;
+            break;
+          }
+        }
+      }
+      
+      // Nếu tìm được sách cụ thể, trả về ngay
+      if (searchResults.length > 0) {
+        return {
+          text: `Mình tìm thấy ${searchResults.length} cuốn sách phù hợp:`,
+          products: searchResults
+        };
+      }
+      
+      // Nếu không tìm thấy, trả về hướng dẫn
+      return {
+        text: 'Mình chưa hiểu rõ bạn muốn tìm sách gì 🤔\n\nBạn có thể:\n• Nói tên sách hoặc tác giả\n• Nói thể loại (văn học, kinh tế, lập trình, ngôn tình...)\n• Xem sách bán chạy\n• Xem sách giảm giá\n\nHoặc hãy nói cụ thể hơn nhé! 📖',
+        products: []
+      };
+    } catch (err) {
+      console.error('Database search error:', err);
+      return {
+        text: 'Có lỗi xảy ra khi tìm kiếm. Bạn có thể xem tại trang Shop hoặc thử lại nhé! 😊',
+        products: []
+      };
+    }
+  }
+  
+  // Best sellers
+  if (lowerMessage.includes('bán chạy') || lowerMessage.includes('phổ biến') || lowerMessage.includes('hot') || lowerMessage.includes('nổi bật')) {
+    try {
+      const results = await new Promise((resolve, reject) => {
+        db.query(
+          'SELECT id, name, price, discount, sold, author, img FROM product WHERE sold > 0 ORDER BY sold DESC LIMIT 5',
+          (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          }
+        );
+      });
+      
+      if (results.length > 0) {
+        return {
+          text: '🔥 Top sách bán chạy:',
+          products: results
+        };
+      }
+    } catch (err) {
+      console.error('Database search error:', err);
+    }
+  }
+  
+  if (lowerMessage.includes('giá')) {
+    return {
+      text: 'Giá sách từ 50.000₫ - 500.000₫ tùy loại sách. Bạn muốn tìm trong khoảng giá nào? 💰',
+      products: []
+    };
+  }
+  
+  if (lowerMessage.includes('khuyến mãi') || lowerMessage.includes('giảm giá') || lowerMessage.includes('sale')) {
+    try {
+      const results = await new Promise((resolve, reject) => {
+        db.query(
+          'SELECT id, name, price, discount, img FROM product WHERE discount > 0 ORDER BY discount DESC LIMIT 5',
+          (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          }
+        );
+      });
+      
+      if (results.length > 0) {
+        return {
+          text: '🎁 Sách đang giảm giá:',
+          products: results
+        };
+      }
+    } catch (err) {
+      console.error('Database search error:', err);
+    }
+    return {
+      text: '🎁 Khuyến mãi hiện tại:\n• Giảm 15% cho khách hàng mới\n• Freeship đơn từ 200.000₫\n• Nhiều sách đang giảm giá\n\nXem chi tiết tại trang Shop! 🎉',
+      products: []
+    };
+  }
+  
+  if (lowerMessage.includes('liên hệ') || lowerMessage.includes('hotline') || lowerMessage.includes('địa chỉ') || lowerMessage.includes('email')) {
+    return {
+      text: '📞 Thông tin liên hệ:\n• Hotline: 0123-456-789\n• Email: support@shopbansach.com\n• Địa chỉ: 123 Nguyễn Huệ, Quận 1, TP.HCM\n• Giờ làm việc: 8:00 - 22:00 hàng ngày\n\nChúng tôi luôn sẵn sàng hỗ trợ bạn! 😊',
+      products: []
+    };
+  }
+  
+  if (lowerMessage.includes('đổi trả') || lowerMessage.includes('chính sách') || lowerMessage.includes('hoàn tiền')) {
+    return {
+      text: '📋 Chính sách đổi trả:\n• Đổi/trả trong 7 ngày nếu lỗi in ấn\n• Hoàn tiền 100% nếu sản phẩm lỗi\n• Hỗ trợ đổi size/màu miễn phí\n\n📦 Chính sách giao hàng:\n• Nội thành: 1-2 ngày\n• Tỉnh/thành khác: 3-5 ngày\n• Freeship đơn từ 200.000đ\n\nCó gì thắc mắc, hãy hỏi tôi nhé! 😊',
+      products: []
+    };
+  }
+  
+  if (lowerMessage.includes('thanh toán') || lowerMessage.includes('payment') || lowerMessage.includes('trả tiền')) {
+    return {
+      text: '💳 Phương thức thanh toán:\n• COD (Thanh toán khi nhận hàng)\n• Chuyển khoản ngân hàng\n• Ví điện tử (MoMo, ZaloPay)\n• Thẻ tín dụng/ghi nợ\n\nTất cả đều an toàn và bảo mật! 🔒',
+      products: []
+    };
+  }
+  
+  // Tìm sách rẻ nhất
+  if (lowerMessage.includes('rẻ nhất') || lowerMessage.includes('re nhat') || lowerMessage.includes('giá rẻ') || lowerMessage.includes('gia re')) {
+    try {
+      const results = await new Promise((resolve, reject) => {
+        db.query(
+          'SELECT id, name, price, discount, author, img FROM product WHERE price > 0 ORDER BY price ASC LIMIT 5',
+          (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          }
+        );
+      });
+      
+      if (results.length > 0) {
+        return {
+          text: '💰 5 cuốn sách giá rẻ nhất:',
+          products: results
+        };
+      }
+    } catch (err) {
+      console.error('Database search error:', err);
+    }
+  }
+  
+  // Tìm sách đắt nhất
+  if (lowerMessage.includes('đắt nhất') || lowerMessage.includes('dat nhat') || lowerMessage.includes('giá cao')) {
+    try {
+      const results = await new Promise((resolve, reject) => {
+        db.query(
+          'SELECT id, name, price, discount, author, img FROM product WHERE price > 0 ORDER BY price DESC LIMIT 5',
+          (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          }
+        );
+      });
+      
+      if (results.length > 0) {
+        return {
+          text: '💎 5 cuốn sách giá cao nhất:',
+          products: results
+        };
+      }
+    } catch (err) {
+      console.error('Database search error:', err);
+    }
+  }
+  
+  // Câu hỏi chung (không liên quan đến sách)
+  // Trả lời thân thiện và hướng về chủ đề sách
+  return {
+    text: 'Xin lỗi, tôi là trợ lý chuyên về sách nên không thể giúp bạn về câu hỏi này. 😅\n\nNhưng tôi có thể giúp bạn:\n• 📚 Tìm kiếm sách theo thể loại\n• 🔥 Xem sách bán chạy\n• 🎁 Sách đang khuyến mãi\n• 💰 Sách giá rẻ nhất\n• 📞 Thông tin liên hệ shop\n\nBạn muốn tìm loại sách nào? 😊',
+    products: []
+  };
+}
+
+// Contact form submission API
+app.post('/api/contact', (req, res) => {
+  const { name, email, subject, message } = req.body;
+  
+  // Validate input
+  if (!name || !email || !subject || !message) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Vui lòng điền đầy đủ thông tin' 
+    });
+  }
+  
+  // Email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Email không hợp lệ' 
+    });
+  }
+  
+  // Insert into database (create contacts table if not exists)
+  db.query(
+    `CREATE TABLE IF NOT EXISTS contacts (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      email VARCHAR(255) NOT NULL,
+      subject VARCHAR(500) NOT NULL,
+      message TEXT NOT NULL,
+      status ENUM('new', 'read', 'replied') DEFAULT 'new',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    (err) => {
+      if (err) {
+        console.error('Error creating contacts table:', err);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Lỗi hệ thống' 
+        });
+      }
+      
+      // Insert contact message
+      db.query(
+        'INSERT INTO contacts (name, email, subject, message) VALUES (?, ?, ?, ?)',
+        [name, email, subject, message],
+        (insertErr) => {
+          if (insertErr) {
+            console.error('Error inserting contact:', insertErr);
+            return res.status(500).json({ 
+              success: false, 
+              message: 'Không thể gửi tin nhắn. Vui lòng thử lại sau' 
+            });
+          }
+          
+          res.json({ 
+            success: true, 
+            message: 'Cảm ơn bạn đã liên hệ! Chúng tôi sẽ phản hồi sớm nhất.' 
+          });
+        }
+      );
+    }
+  );
+});
+
+// Admin: Get all contacts
+app.get('/admin/contacts', authenticateAdmin, (req, res) => {
+  const status = req.query.status;
+  let query = 'SELECT * FROM contacts';
+  const params = [];
+  if (status && ['new', 'read', 'replied'].includes(status)) {
+    query += ' WHERE status = ?';
+    params.push(status);
+  }
+  query += ' ORDER BY created_at DESC';
+  db.query(query, params, (err, results) => {
+    if (err) {
+      console.error('Error fetching contacts:', err);
+      return res.status(500).json({ message: 'Lỗi khi lấy danh sách liên hệ' });
+    }
+    res.json(results);
+  });
+});
+
+// Admin: Update contact status
+app.put('/admin/contacts/:id/status', authenticateAdmin, (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  if (!['new', 'read', 'replied'].includes(status)) {
+    return res.status(400).json({ message: 'Trạng thái không hợp lệ' });
+  }
+  db.query('UPDATE contacts SET status = ? WHERE id = ?', [status, id], (err, result) => {
+    if (err) {
+      console.error('Error updating contact status:', err);
+      return res.status(500).json({ message: 'Lỗi khi cập nhật trạng thái' });
+    }
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Không tìm thấy liên hệ' });
+    }
+    res.json({ success: true, message: 'Cập nhật trạng thái thành công' });
+  });
+});
+
+// Admin: Delete contact
+app.delete('/admin/contacts/:id', authenticateAdmin, (req, res) => {
+  const { id } = req.params;
+  db.query('DELETE FROM contacts WHERE id = ?', [id], (err, result) => {
+    if (err) {
+      console.error('Error deleting contact:', err);
+      return res.status(500).json({ message: 'Lỗi khi xóa liên hệ' });
+    }
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Không tìm thấy liên hệ' });
+    }
+    res.json({ success: true, message: 'Xóa liên hệ thành công' });
+  });
+});
+
+// Admin: Get contacts statistics
+app.get('/admin/contacts/stats', authenticateAdmin, (req, res) => {
+  db.query(
+    `SELECT 
+      COUNT(*) as total,
+      SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) as new_count,
+      SUM(CASE WHEN status = 'read' THEN 1 ELSE 0 END) as read_count,
+      SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END) as replied_count
+    FROM contacts`,
+    (err, results) => {
+      if (err) {
+        console.error('Error fetching contact stats:', err);
+        return res.status(500).json({ message: 'Lỗi khi lấy thống kê' });
+      }
+      res.json(results[0]);
+    }
+  );
 });
 
 app.listen(port, () => {
