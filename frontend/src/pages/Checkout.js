@@ -1,12 +1,14 @@
-import React, { Fragment, useEffect, useState } from "react";
+import React, { Fragment, useEffect, useState, useContext } from "react";
 import { useNavigate, Link } from 'react-router-dom';
 import Header from "./Header";
 import Footer from "./Footer";
 import axios from 'axios';
 import { parseVND, formatVND } from '../utils/currency';
 import { toast } from 'react-toastify';
+import { CartContext } from './CartContext';
 
 function Checkout() {
+    const { clearCart } = useContext(CartContext);
     // Khai báo các biến trạng thái
     const [cartItems, setCartItems] = useState([]); // Danh sách sản phẩm trong giỏ hàng
     const [formData, setFormData] = useState({
@@ -42,6 +44,7 @@ function Checkout() {
     const [selectedUserVoucherId, setSelectedUserVoucherId] = useState(null);
     const [loadingMyVouchers, setLoadingMyVouchers] = useState(false);
     const [hasAuthToken, setHasAuthToken] = useState(!!localStorage.getItem('token'));
+    const [isSubmitting, setIsSubmitting] = useState(false);
     const navigate = useNavigate();
 
     const popularProvinces = [
@@ -122,18 +125,40 @@ function Checkout() {
 
         const token = localStorage.getItem('token');
         setHasAuthToken(!!token);
-        if (token) {
-            setLoadingMyVouchers(true);
-            axios.get('/api/my-vouchers', { headers: { 'Authorization': `Bearer ${token}` } })
-                .then(response => {
-                    setMyVouchers(Array.isArray(response.data) ? response.data : []);
-                })
-                .catch(error => {
-                    console.error('Error fetching my vouchers:', error);
-                })
-                .finally(() => setLoadingMyVouchers(false));
-        }
-    }, []);
+        
+        // Function to load vouchers - ALWAYS load fresh data
+        const loadVouchers = () => {
+            if (token) {
+                setLoadingMyVouchers(true);
+                axios.get('/api/my-vouchers', { headers: { 'Authorization': `Bearer ${token}` } })
+                    .then(response => {
+                        console.log('[Checkout] Vouchers loaded:', response.data);
+                        setMyVouchers(Array.isArray(response.data) ? response.data : []);
+                    })
+                    .catch(error => {
+                        console.error('Error fetching my vouchers:', error);
+                    })
+                    .finally(() => setLoadingMyVouchers(false));
+            }
+        };
+        
+        // Load vouchers immediately on mount
+        loadVouchers();
+        
+        // Also reload when page becomes visible
+        const handleVisibilityChange = () => {
+            if (!document.hidden && token) {
+                console.log('[Checkout] Page visible, reloading vouchers...');
+                loadVouchers();
+            }
+        };
+        
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Hàm tính tổng phụ (subtotal) của giỏ hàng - chuẩn hoá giá VND
     const getSubtotal = () => {
@@ -161,29 +186,35 @@ function Checkout() {
     // Xử lý áp dụng voucher
     const handleApplyVoucher = async (codeOverride = null, options = {}) => {
         const candidate = codeOverride ?? voucherCode ?? '';
-        const effectiveCode = String(candidate).trim();
+        const effectiveCode = String(candidate).trim().toUpperCase();
         if (!effectiveCode) {
             setVoucherError('Vui lòng nhập mã voucher');
             return;
         }
         
         try {
-            const response = await axios.post('/api/vouchers/validate', { code: effectiveCode });
+            const token = localStorage.getItem('token');
+            const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+            const response = await axios.post('/api/vouchers/validate', { code: effectiveCode }, { headers });
             const voucher = response.data;
-            const subtotal = getSubtotal() - getBulkDiscount();
+            
+            // Sử dụng subtotal GỐC (chưa trừ bulk discount) để kiểm tra điều kiện tối thiểu
+            const originalSubtotal = getSubtotal();
             
             // Check minimum order amount
-            if (subtotal < voucher.min_order_amount) {
+            if (originalSubtotal < voucher.min_order_amount) {
                 setVoucherError(`Đơn hàng tối thiểu ${formatVND(voucher.min_order_amount)} để sử dụng voucher này`);
                 setVoucherDiscount(0);
+                setSelectedUserVoucherId(null);
                 if (!options.silent) toast.info('Giá trị đơn hàng chưa đạt điều kiện voucher');
                 return;
             }
             
-            // Calculate discount
+            // Calculate discount - Áp dụng trên subtotal SAU khi trừ bulk discount
+            const subtotalAfterBulk = originalSubtotal - getBulkDiscount();
             let discount = 0;
             if (voucher.discount_type === 'percent') {
-                discount = Math.round(subtotal * voucher.discount_value / 100);
+                discount = Math.round(subtotalAfterBulk * voucher.discount_value / 100);
                 if (voucher.max_discount && discount > voucher.max_discount) {
                     discount = voucher.max_discount;
                 }
@@ -194,25 +225,27 @@ function Checkout() {
             setVoucherDiscount(discount);
             setVoucherError('');
             setVoucherCode(effectiveCode);
-            if (options.userVoucherId) {
-                setSelectedUserVoucherId(options.userVoucherId);
-            } else if (!options.keepSelection) {
-                setSelectedUserVoucherId(null);
-            }
-            if (!options.silent) toast.success('Áp dụng voucher thành công!');
+            
+            // Sử dụng user_voucher_id từ API response hoặc từ options
+            const finalUserVoucherId = options.userVoucherId || voucher.user_voucher_id || null;
+            setSelectedUserVoucherId(finalUserVoucherId);
+            
+            if (!options.silent) toast.success(`Áp dụng voucher thành công! Giảm ${formatVND(discount)}`);
         } catch (error) {
-            setVoucherError(error.response?.data?.message || 'Mã voucher không hợp lệ');
+            const errorMsg = error.response?.data?.message || 'Mã voucher không hợp lệ';
+            setVoucherError(errorMsg);
             setVoucherDiscount(0);
-            if (!options.silent) toast.error('Áp dụng voucher thất bại');
+            setSelectedUserVoucherId(null);
+            if (!options.silent) toast.error(errorMsg);
         }
     };
 
     const handleSelectSavedVoucher = (voucher) => {
-        if (!voucher || voucher.is_used) {
-            toast.info('Voucher đã được sử dụng');
+        if (!voucher) {
+            toast.error('Voucher không hợp lệ');
             return;
         }
-        handleApplyVoucher(voucher.code, { userVoucherId: voucher.user_voucher_id, keepSelection: true });
+        handleApplyVoucher(voucher.code, { userVoucherId: voucher.user_voucher_id });
     };
 
     // Tính tổng giảm giá (bulk + voucher)
@@ -220,7 +253,8 @@ function Checkout() {
         return getBulkDiscount() + voucherDiscount;
     };
 
-    const availableSavedVouchers = myVouchers.filter(v => !v.is_used);
+    // API /api/my-vouchers đã lọc voucher chưa dùng và còn hạn
+    const availableSavedVouchers = myVouchers;
 
     // Hàm tính phí vận chuyển (tính sau khi trừ giảm giá)
     const getShippingFee = () => {
@@ -278,6 +312,12 @@ function Checkout() {
 
     // Hàm xử lý đặt hàng
     const handlePlaceOrder = async () => {
+        // Prevent double submission
+        if (isSubmitting) {
+            console.log('[Checkout] Already submitting, ignoring...');
+            return;
+        }
+        
         // Kiểm tra nếu giỏ hàng trống
         if (cartItems.length === 0) {
             toast.info('Giỏ hàng trống. Vui lòng thêm sản phẩm trước khi thanh toán.');
@@ -289,8 +329,25 @@ function Checkout() {
             toast.info('Vui lòng kiểm tra lại thông tin giao hàng.');
             return;
         }
+        
+        // Backend sẽ validate voucher - không cần kiểm tra phức tạp ở frontend
 
+        setIsSubmitting(true);
         try {
+            // Lưu thông tin voucher trước khi reset
+            const currentVoucherCode = voucherCode ? voucherCode.trim().toUpperCase() : null;
+            const currentUserVoucherId = selectedUserVoucherId;
+            
+            console.log('=== Order Data Debug ===');
+            console.log('Cart Items:', cartItems);
+            console.log('Subtotal (before discounts):', getSubtotal());
+            console.log('Bulk Discount:', getBulkDiscount());
+            console.log('Voucher Code:', currentVoucherCode);
+            console.log('User Voucher ID:', currentUserVoucherId);
+            console.log('Voucher Discount:', voucherDiscount);
+            console.log('Shipping Fee:', getShippingFee());
+            console.log('Total:', getTotal());
+            
             // Tạo dữ liệu đơn hàng
             const orderData = {
                 // Do not send email field anymore
@@ -301,10 +358,17 @@ function Checkout() {
                 paymentMethod: formData.paymentMethod,
                 note: formData.note,
                 cartItems,
+                subtotal: getSubtotal(), // Gửi subtotal gốc để backend validate voucher
                 total: getTotal(),
-                voucherCode: voucherCode ? voucherCode.trim().toUpperCase() : null,
-                userVoucherId: selectedUserVoucherId
+                voucherCode: currentVoucherCode,
+                userVoucherId: currentUserVoucherId
             };
+
+            // Reset voucher NGAY trước khi gửi để tránh double submit
+            setVoucherCode('');
+            setVoucherDiscount(0);
+            setSelectedUserVoucherId(null);
+            setVoucherError('');
 
             // Gửi dữ liệu đơn hàng lên server
             const token = localStorage.getItem('token');
@@ -312,7 +376,23 @@ function Checkout() {
             const resp = await axios.post('/api/orders', orderData, { headers });
             const updatedSold = resp?.data?.updatedSold;
             toast.success(`Đặt hàng thành công!${typeof updatedSold === 'number' ? ` (cập nhật ${updatedSold} sản phẩm)` : ''}`);
+            
+            // Force reload vouchers ngay lập tức nếu có token
+            if (token) {
+                console.log('[Checkout] Force reloading vouchers after order...');
+                axios.get('/api/my-vouchers', { headers })
+                    .then(response => {
+                        console.log('[Checkout] Vouchers reloaded after order:', response.data);
+                        setMyVouchers(Array.isArray(response.data) ? response.data : []);
+                    })
+                    .catch(error => {
+                        console.error('Error reloading vouchers:', error);
+                    });
+            }
+            
             localStorage.removeItem('cart'); // Xóa giỏ hàng sau khi đặt hàng thành công
+            clearCart(); // Cập nhật CartContext
+            setCartItems([]); // Cập nhật state local
             // Giữ lại thông tin người nhận cho lần sau, chỉ xóa ghi chú
             const kept = {...formData, note: ''};
             localStorage.setItem('checkoutForm', JSON.stringify({
@@ -326,7 +406,11 @@ function Checkout() {
             setTimeout(() => navigate('/shop'), 300);
         } catch (error) {
             console.error('Error placing order:', error);
-            toast.error('Có lỗi xảy ra khi đặt hàng. Vui lòng thử lại.');
+            console.error('Error response:', error.response?.data);
+            const errorMsg = error.response?.data?.message || 'Có lỗi xảy ra khi đặt hàng. Vui lòng thử lại.';
+            toast.error(errorMsg);
+        } finally {
+            setIsSubmitting(false);
         }
     };
 
@@ -441,11 +525,11 @@ function Checkout() {
                                         <div className="input-group input-group-sm">
                                             <input 
                                                 type="text" 
-                                            className={`form-control ${voucherError ? 'is-invalid' : ''}`}
-                                            placeholder="Ví dụ: WELCOME20K"
+                                                className={`form-control ${voucherError ? 'is-invalid' : ''}`}
+                                                placeholder="Nhập mã voucher (ví dụ: WELCOME20K)"
                                                 value={voucherCode}
                                                 onChange={(e) => {
-                                                    setVoucherCode(e.target.value);
+                                                    setVoucherCode(e.target.value.toUpperCase());
                                                     setVoucherError('');
                                                     setSelectedUserVoucherId(null);
                                                 }}
@@ -536,7 +620,7 @@ function Checkout() {
                                     </h6>
                                 </div>
                                 {(shippingSettings.delivery_days || shippingSettings.areas) && (
-                                    <div className="small text-muted mb-3">
+                                    <div className="small text-muted mb-3" style={{textAlign: 'left'}}>
                                         {shippingSettings.delivery_days && (
                                             <div><i className="fa fa-clock me-1"></i>Dự kiến giao hàng: {shippingSettings.delivery_days} ngày</div>
                                         )}
@@ -641,6 +725,7 @@ function Checkout() {
                             <div className="card-footer border-secondary bg-transparent">
                                 <button
                                     className="btn btn-lg btn-block btn-primary font-weight-bold my-3 py-3"
+                                    disabled={isSubmitting}
                                     onClick={() => {
                                         if (!formData.paymentMethod) {
                                             toast.info('Vui lòng chọn phương thức thanh toán');
@@ -648,7 +733,13 @@ function Checkout() {
                                         }
                                         if (!validateForm()) return;
                                         handlePlaceOrder();
-                                    }}>Đặt hàng
+                                    }}>
+                                    {isSubmitting ? (
+                                        <>
+                                            <span className="spinner-border spinner-border-sm mr-2" role="status" aria-hidden="true"></span>
+                                            Đang xử lý...
+                                        </>
+                                    ) : 'Đặt hàng'}
                                 </button>
                             </div>
                         </div>

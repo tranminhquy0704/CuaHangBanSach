@@ -16,6 +16,7 @@ import Login from './pages/User/Login';
 import MyOrders from './pages/User/MyOrders';
 import OrderDetail from './pages/User/OrderDetail';
 import VoucherWarehouse from './pages/VoucherWarehouse';
+import Chatbot from './pages/Chatbot';
  
 
 function App() {
@@ -40,6 +41,7 @@ function App() {
             <Route path="/my-orders" exact Component={MyOrders} />
             <Route path="/my-orders/:id" exact Component={OrderDetail} />
           </Routes>
+          <Chatbot />
         </Router>
       </CartProvider>
     </div>

@@ -241,42 +241,6 @@ function Cart() {
                                         <h6 className="font-weight-medium text-success">-{formatVND(getBulkDiscount())}</h6>
                                     </div>
                                 )}
-                                {promoSettings.enable_voucher && (
-                                    <div className="mb-2">
-                                        <div className="input-group input-group-sm">
-                                            <input 
-                                                type="text" 
-                                                className={`form-control ${voucherError ? 'is-invalid' : ''}`}
-                                                placeholder="Nhập mã voucher"
-                                                value={voucherCode}
-                                                onChange={(e) => {
-                                                    setVoucherCode(e.target.value);
-                                                    setVoucherError('');
-                                                }}
-                                                onKeyPress={(e) => {
-                                                    if (e.key === 'Enter') handleApplyVoucher();
-                                                }}
-                                            />
-                                            <button 
-                                                className="btn btn-outline-primary" 
-                                                type="button"
-                                                onClick={handleApplyVoucher}
-                                            >
-                                                Áp dụng
-                                            </button>
-                                        </div>
-                                        {voucherError && <small className="text-danger d-block mt-1">{voucherError}</small>}
-                                        {voucherDiscount > 0 && (
-                                            <div className="d-flex justify-content-between mt-2">
-                                                <small className="text-success">Voucher: {voucherCode}</small>
-                                                <small className="text-success fw-bold">-{formatVND(voucherDiscount)}</small>
-                                            </div>
-                                        )}
-                                        <small className="d-block mt-2">
-                                            <Link to="/vouchers">Vào kho voucher để nhận thêm ưu đãi</Link>
-                                        </small>
-                                    </div>
-                                )}
                                 {getTotalQuantity() < promoSettings.bulk_threshold && promoSettings.bulk_discount > 0 && (
                                     <div className="alert alert-info py-2 mb-0">
                                         <small>

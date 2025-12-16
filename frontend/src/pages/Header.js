@@ -100,22 +100,27 @@ function Header() {
                         {/* Hành động bên phải (đẩy sát phải) */}
                         <div className="col-auto d-flex align-items-center right-actions ml-auto">
                             {/* Giỏ hàng đặt bên trong (gần thanh tìm kiếm) */}
-                            <Link to="/cart" className="icon-btn position-relative mr-2" title="Giỏ hàng">
+                            <Link to="/cart" className="icon-btn position-relative" title="Giỏ hàng">
                                 <i className="fas fa-shopping-cart"></i>
                                 <span className="cart-badge">{cartCount}</span>
                             </Link>
+                            
+                            {/* Đơn hàng của tôi (chỉ hiện khi đã đăng nhập) */}
+                            {userEmail && (
+                                <Link to="/my-orders" className="icon-btn d-none d-md-inline-flex" title="Lịch sử đơn hàng">
+                                    <i className="fas fa-clipboard-list"></i>
+                                </Link>
+                            )}
+                            
                             {/* Tài khoản (đặt ngoài cùng bên phải) */}
                             <div className="dropdown d-none d-md-inline-flex">
                                 <button className="icon-btn dropdown-toggle" id="accountDropdown" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="Tài khoản">
-                                    <i className="fas fa-user"></i>
+                                    <i className="fas fa-user-circle"></i>
                                 </button>
                                 <div className="dropdown-menu dropdown-menu-right dropdown-menu-modern" aria-labelledby="accountDropdown">
                                     {userEmail ? (
                                         <div className="px-3 py-2">
                                             <div className="mb-2">Xin chào, <strong>{userEmail}</strong></div>
-                                            <Link to="/my-orders" className="btn btn-outline-primary btn-sm w-100 mb-2">
-                                                <i className="fas fa-shopping-bag me-1"></i>Đơn hàng của tôi
-                                            </Link>
                                             <button className="btn btn-outline-secondary btn-sm w-100" onClick={handleLogout}>Đăng xuất</button>
                                         </div>
                                     ) : (

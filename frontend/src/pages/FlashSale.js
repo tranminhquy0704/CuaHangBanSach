@@ -64,19 +64,11 @@ const FlashSale = () => {
   const { h, m, s } = useCountdownTo(end);
 
   useEffect(() => {
-    axios.get('/api/products')
+    axios.get(`/api/products?_t=${Date.now()}`)
       .then(res => {
         const data = Array.isArray(res.data) ? res.data : [];
-        // pick products that have discount if present, otherwise mock a few discounts
-        let list = data.filter(p => p.discount);
-        if (list.length === 0) {
-          list = data.slice(0, 10).map((p, idx) => ({
-            ...p,
-            discount: [10, 15, 20, 25, 30][idx % 5],
-            sold: p.sold ?? (500 + idx * 23),
-            rating: p.rating ?? 4.5,
-          }));
-        }
+        // Chỉ lấy sản phẩm có is_flashsale = true (hoặc 1)
+        const list = data.filter(p => p.is_flashsale === 1 || p.is_flashsale === true);
         setItems(list);
         setLoading(false);
       })

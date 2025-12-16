@@ -2,11 +2,21 @@ import React, { Fragment, useState, useEffect } from "react";
 import Header from "./Header";
 import Footer from "./Footer";
 import axios from "axios";
+import { toast } from 'react-toastify';
 
 function Contact() {
     const [settings, setSettings] = useState({});
+    const [loading, setLoading] = useState(true);
+    const [formData, setFormData] = useState({
+        name: '',
+        email: '',
+        subject: '',
+        message: ''
+    });
+    const [isSubmitting, setIsSubmitting] = useState(false);
     
     useEffect(() => {
+        setLoading(true);
         axios.get('/api/settings')
             .then(response => {
                 const settingsMap = {};
@@ -19,11 +29,54 @@ function Contact() {
             })
             .catch(error => {
                 console.error('Error fetching settings:', error);
+            })
+            .finally(() => {
+                setLoading(false);
             });
     }, []);
 
     const getSetting = (key, defaultValue = '') => {
         return settings[key] || defaultValue;
+    };
+
+    const handleInputChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({
+            ...prev,
+            [name]: value
+        }));
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        
+        // Validate
+        if (!formData.name || !formData.email || !formData.subject || !formData.message) {
+            toast.error('Vui lòng điền đầy đủ thông tin');
+            return;
+        }
+
+        setIsSubmitting(true);
+        
+        try {
+            const response = await axios.post('/api/contact', formData);
+            
+            if (response.data.success) {
+                toast.success(response.data.message);
+                // Reset form
+                setFormData({
+                    name: '',
+                    email: '',
+                    subject: '',
+                    message: ''
+                });
+            }
+        } catch (error) {
+            const errorMsg = error.response?.data?.message || 'Có lỗi xảy ra. Vui lòng thử lại sau';
+            toast.error(errorMsg);
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     return (
@@ -41,39 +94,77 @@ function Contact() {
                 </div>
             </div>
 
-            <div className="container-fluid pt-5">
+            {loading ? (
+                <div className="container-fluid pt-5 pb-5">
+                    <div className="text-center">
+                        <div className="spinner-border text-primary" role="status">
+                            <span className="sr-only">Đang tải...</span>
+                        </div>
+                        <p className="mt-3 text-muted">Đang tải thông tin...</p>
+                    </div>
+                </div>
+            ) : (
+                <>
+                    <div className="container-fluid pt-5">
                 <div className="text-center mb-4">
                     <h2 className="section-title px-5"><span className="px-2">Liên Hệ</span></h2>
                 </div>
                 <div className="row px-xl-5">
                     <div className="col-lg-7 mb-5">
                         <div className="contact-form">
-                            <div id="success"></div>
-                            <form name="sentMessage" id="contactForm" noValidate>
-                                <div className="control-group">
-                                    <input type="text" className="form-control" id="name" placeholder="Your Name"
-                                        required="required" data-validation-required-message="Please enter your name" />
-                                    <p className="help-block text-danger"></p>
+                            <form onSubmit={handleSubmit}>
+                                <div className="control-group mb-3">
+                                    <input 
+                                        type="text" 
+                                        className="form-control" 
+                                        name="name"
+                                        placeholder="Họ và tên"
+                                        value={formData.name}
+                                        onChange={handleInputChange}
+                                        required
+                                    />
                                 </div>
-                                <div className="control-group">
-                                    <input type="email" className="form-control" id="email" placeholder="Your Email"
-                                        required="required" data-validation-required-message="Please enter your email" />
-                                    <p className="help-block text-danger"></p>
+                                <div className="control-group mb-3">
+                                    <input 
+                                        type="email" 
+                                        className="form-control" 
+                                        name="email"
+                                        placeholder="Email của bạn"
+                                        value={formData.email}
+                                        onChange={handleInputChange}
+                                        required
+                                    />
                                 </div>
-                                <div className="control-group">
-                                    <input type="text" className="form-control" id="subject" placeholder="Subject"
-                                        required="required" data-validation-required-message="Please enter a subject" />
-                                    <p className="help-block text-danger"></p>
+                                <div className="control-group mb-3">
+                                    <input 
+                                        type="text" 
+                                        className="form-control" 
+                                        name="subject"
+                                        placeholder="Tiêu đề"
+                                        value={formData.subject}
+                                        onChange={handleInputChange}
+                                        required
+                                    />
                                 </div>
-                                <div className="control-group">
-                                    <textarea className="form-control" rows="6" id="message" placeholder="Message"
-                                        required="required"
-                                        data-validation-required-message="Please enter your message"></textarea>
-                                    <p className="help-block text-danger"></p>
+                                <div className="control-group mb-3">
+                                    <textarea 
+                                        className="form-control" 
+                                        rows="6" 
+                                        name="message"
+                                        placeholder="Nội dung tin nhắn"
+                                        value={formData.message}
+                                        onChange={handleInputChange}
+                                        required
+                                    ></textarea>
                                 </div>
                                 <div>
-                                    <button className="btn btn-primary py-2 px-4" type="submit" id="sendMessageButton">Gửi
-                                        </button>
+                                    <button 
+                                        className="btn btn-primary py-2 px-4" 
+                                        type="submit"
+                                        disabled={isSubmitting}
+                                    >
+                                        {isSubmitting ? 'Đang gửi...' : 'Gửi tin nhắn'}
+                                    </button>
                                 </div>
                             </form>
                         </div>
@@ -139,6 +230,37 @@ function Contact() {
                     </div>
                 </div>
             </div>
+
+            {/* Google Maps */}
+            <div className="container-fluid pt-5 mb-5">
+                <div className="row px-xl-5">
+                    <div className="col-12">
+                        <div className="text-center mb-4">
+                            <h2 className="section-title px-5"><span className="px-2">Vị trí cửa hàng</span></h2>
+                        </div>
+                        <div className="mx-xl-5">
+                            <div className="bg-light p-3 rounded" style={{ height: '400px' }}>
+                                <iframe
+                                    title="Store Location"
+                                    src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3919.3249313620494!2d106.66408931533419!3d10.786834992314447!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x31752ed2392c44df%3A0xd2ecb62e0d050fe9!2sFPT-Aptech%20Computer%20Education%20HCM!5e0!3m2!1svi!2s!4v1638345678901!5m2!1svi!2s"
+                                    width="100%"
+                                    height="100%"
+                                    style={{ border: 0, borderRadius: '8px' }}
+                                    allowFullScreen=""
+                                    loading="lazy"
+                                ></iframe>
+                            </div>
+                            <p className="text-muted mt-3 text-center">
+                                <i className="fa fa-info-circle me-2"></i>
+                                Bạn có thể thay đổi vị trí bản đồ trong phần cài đặt quản trị
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+                </>
+            )}
+
             <Footer />
         </Fragment>
     )

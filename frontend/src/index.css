@@ -98,9 +98,21 @@ code {
 }
 
 .icon-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(0,0,0,0.08);
-  text-decoration: none;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.08) !important;
+  text-decoration: none !important;
+  background: #f8fafc !important; /* Thêm background nhạt khi hover */
+  border-color: #d1d5db !important; /* Border đậm hơn */
+}
+
+.icon-btn:hover i {
+  color: var(--color-primary) !important; /* Icon đổi màu primary khi hover */
+}
+
+/* Đảm bảo dropdown button cũng có hover effect */
+.icon-btn.dropdown-toggle:hover {
+  background: #f8fafc !important;
+  border-color: #d1d5db !important;
 }
 
 .icon-btn i {
@@ -180,14 +192,34 @@ code {
   border: 1px solid #e5e7eb;
   box-shadow: 0 10px 30px rgba(0,0,0,0.08);
   overflow: hidden;
+  background: #ffffff;
 }
 
 .dropdown-menu-modern .dropdown-item {
   padding: 10px 14px;
+  color: #1f2937; /* gray-800 */
 }
 
 .dropdown-menu-modern .dropdown-item:hover {
   background: #f8fafc;
+}
+
+.dropdown-menu-modern .px-3 {
+  color: #1f2937; /* gray-800 */
+}
+
+.dropdown-menu-modern strong {
+  color: #111827; /* gray-900 */
+}
+
+.dropdown-menu-modern .btn {
+  color: #1f2937 !important; /* gray-800 - đảm bảo text rõ luôn */
+  border-color: #d1d5db !important; /* gray-300 */
+}
+
+.dropdown-menu-modern .btn:hover {
+  background: #f3f4f6 !important; /* gray-100 */
+  border-color: #9ca3af !important; /* gray-400 */
 }
 
 .nav-text-muted {
@@ -280,19 +312,20 @@ code {
 /* ===== Header layout tweaks ===== */
 /* Đảm bảo nhóm nút bên phải luôn dính sát mép phải */
 .shop-header .right-actions {
-  margin-left: auto;
+  margin-left: 20px !important; /* Khoảng cách từ thanh tìm kiếm - tăng lên */
+  gap: 12px !important; /* Khoảng cách đều giữa các icon */
 }
 .shop-header .right-actions .icon-btn + .icon-btn { /* khoảng cách giữa các icon */
-  margin-left: 8px;
+  margin-left: 0; /* Bỏ vì dùng gap */
 }
 /* Bảo đảm khoảng cách giữa ô tìm kiếm và icon đầu tiên bên phải */
 .shop-header .right-actions > *:first-child {
-  margin-left: 12px;
+  margin-left: 0; /* Bỏ vì dùng gap */
 }
 
 /* Tạo khoảng cách giữa ô tìm kiếm và nhóm nút bên phải */
 .shop-header .search-form .search-wrap {
-  margin-right: 24px; /* tăng khoảng cách để không dính vào icon */
+  margin-right: 0; /* Bỏ vì dùng margin-left trên right-actions */
 }
 
 /* Ẩn caret của nút dropdown để đồng nhất với icon giỏ hàng */

@@ -52,7 +52,8 @@ const VoucherWarehouse = () => {
   const renderVoucherCard = (voucher) => {
     const remaining = voucher.remaining;
     const isClaimed = voucher.claimed;
-    const isUsed = voucher.user_voucher_used;
+    // Kiểm tra is_used với nhiều định dạng
+    const isUsed = voucher.user_voucher_used === true || voucher.user_voucher_used === 1 || voucher.user_voucher_used === '1';
     const today = new Date();
     const startDate = voucher.start_date ? new Date(voucher.start_date) : null;
     const endDate = voucher.end_date ? new Date(voucher.end_date) : null;
@@ -117,7 +118,8 @@ const VoucherWarehouse = () => {
     return vouchers.filter((voucher) => {
       const endDate = voucher.end_date ? new Date(voucher.end_date) : null;
       const expired = endDate && endDate < now;
-      const used = Boolean(voucher.user_voucher_used);
+      // Kiểm tra is_used với nhiều định dạng
+      const used = voucher.user_voucher_used === true || voucher.user_voucher_used === 1 || voucher.user_voucher_used === '1';
       const outOfStock = voucher.remaining !== null && voucher.remaining <= 0;
       return !expired && !used && !outOfStock;
     });
